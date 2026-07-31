@@ -15,7 +15,7 @@ tasks
         val disabledLint = listOf(
             "processing", "path", "fallthrough", "serial", "overloads", "this-escape",
         )
-        sourceCompatibility = "21"
+        sourceCompatibility = "25"
         options.compilerArgs.addAll(listOf("-Xlint:all") + disabledLint.map { "-Xlint:-$it" })
         options.isDeprecation = true
         options.encoding = "UTF-8"
@@ -66,6 +66,8 @@ tasks.withType<Javadoc>().configureEach {
 }
 
 configure<JavaPluginExtension> {
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
     withJavadocJar()
     withSourcesJar()
 }

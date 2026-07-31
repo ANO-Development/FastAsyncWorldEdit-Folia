@@ -13,7 +13,7 @@ plugins {
 }
 
 val rootVersion: String = (extra.properties["rootVersion"] as? String) ?: "2.15.4"
-val snapshot: String = (extra.properties["snapshot"] as? String) ?: "SNAPSHOT"
+val snapshot: String = (extra.properties["snapshot"] as? String) ?: "folia.1"
 var revision: String = (extra.properties["revision"] as? String) ?: ""
 var buildNumber: String = (extra.properties["buildNumber"] as? String) ?: ""
 var date: String = (extra.properties["date"] as? String) ?: ""

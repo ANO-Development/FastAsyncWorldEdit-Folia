@@ -3,6 +3,7 @@ package com.fastasyncworldedit.bukkit.adapter;
 import co.aikar.timings.Timings;
 import com.fastasyncworldedit.bukkit.listener.ChunkListener;
 import com.fastasyncworldedit.core.queue.implementation.QueueHandler;
+import org.bukkit.Bukkit;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -26,6 +27,11 @@ public class BukkitQueueHandler extends QueueHandler {
             asyncCatcher.setAccessible(true);
         } catch (Throwable ignored) {
         }
+    }
+
+    @Override
+    protected boolean isMainThread() {
+        return Bukkit.isGlobalTickThread();
     }
 
     @Override

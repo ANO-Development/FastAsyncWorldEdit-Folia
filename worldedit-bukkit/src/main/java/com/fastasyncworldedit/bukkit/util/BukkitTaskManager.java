@@ -1,10 +1,13 @@
 package com.fastasyncworldedit.bukkit.util;
 
 import com.fastasyncworldedit.core.util.TaskManager;
+import com.sk89q.worldedit.entity.Entity;
+import com.sk89q.worldedit.world.World;
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.Plugin;
 
 import javax.annotation.Nonnull;
+import java.util.function.Supplier;
 
 public class BukkitTaskManager extends TaskManager {
 
@@ -15,8 +18,20 @@ public class BukkitTaskManager extends TaskManager {
     }
 
     @Override
-    public int repeat(@Nonnull final Runnable runnable, final int interval) {
-        return this.plugin.getServer().getScheduler().scheduleSyncRepeatingTask(this.plugin, runnable, interval, interval);
+    public int repeat(@Nonnull final Runnable runnable, final int delay, final int interval) {
+        return this.plugin.getServer().getScheduler().scheduleSyncRepeatingTask(this.plugin, runnable, delay, interval);
+    }
+
+    @Override
+    public int repeatAt(
+            @Nonnull Runnable runnable,
+            @Nonnull World world,
+            int chunkX,
+            int chunkZ,
+            int delay,
+            int interval
+    ) {
+        return repeat(runnable, delay, interval);
     }
 
     @Override
@@ -35,6 +50,16 @@ public class BukkitTaskManager extends TaskManager {
     }
 
     @Override
+    public void taskAt(@Nonnull Runnable runnable, @Nonnull World world, int chunkX, int chunkZ) {
+        task(runnable);
+    }
+
+    @Override
+    public void taskWith(@Nonnull Runnable runnable, @Nonnull Entity entity) {
+        task(runnable);
+    }
+
+    @Override
     public void later(@Nonnull final Runnable runnable, final int delay) {
         this.plugin.getServer().getScheduler().runTaskLater(this.plugin, runnable, delay).getTaskId();
     }
@@ -49,6 +74,16 @@ public class BukkitTaskManager extends TaskManager {
         if (task != -1) {
             Bukkit.getScheduler().cancelTask(task);
         }
+    }
+
+    @Override
+    public <T> T syncAt(@Nonnull Supplier<T> function, @Nonnull World world, int chunkX, int chunkZ) {
+        return syncGlobal(function);
+    }
+
+    @Override
+    public <T> T syncWith(@Nonnull Supplier<T> function, @Nonnull Entity entity) {
+        return syncGlobal(function);
     }
 
 }

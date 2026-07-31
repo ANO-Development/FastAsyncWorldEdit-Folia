@@ -21,6 +21,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.Collections;
+import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BiFunction;
@@ -104,10 +105,11 @@ public abstract class Regenerator {
     private void copyToWorld() {
         createSource();
         final long timeoutPerTick = TimeUnit.MILLISECONDS.toNanos(10);
-        int taskId = TaskManager.taskManager().repeat(() -> {
+        Runnable pollTasks = () -> {
             final long startTime = System.nanoTime();
             runTasks(() -> System.nanoTime() - startTime < timeoutPerTick);
-        }, 1);
+        };
+        Collection<Integer> taskIds = scheduleTaskPolling(pollTasks);
         //Setting Blocks
         boolean genbiomes = options.shouldRegenBiomes();
         boolean hasBiome = options.hasBiomeType();
@@ -125,8 +127,15 @@ public abstract class Regenerator {
                 return source.getBiome(vec);
             });
         }
-        target.setBlocks(region, pattern);
-        TaskManager.taskManager().cancel(taskId);
+        try {
+            target.setBlocks(region, pattern);
+        } finally {
+            taskIds.forEach(TaskManager.taskManager()::cancel);
+        }
+    }
+
+    protected Collection<Integer> scheduleTaskPolling(Runnable pollTasks) {
+        return List.of(TaskManager.taskManager().repeat(pollTasks, 1));
     }
 
     private abstract class ChunkwisePattern implements Pattern {

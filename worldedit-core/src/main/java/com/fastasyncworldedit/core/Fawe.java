@@ -7,6 +7,7 @@ import com.fastasyncworldedit.core.queue.implementation.QueueHandler;
 import com.fastasyncworldedit.core.util.CachedTextureUtil;
 import com.fastasyncworldedit.core.util.CleanTextureUtil;
 import com.fastasyncworldedit.core.util.FaweTimer;
+import com.fastasyncworldedit.core.util.FoliaSupport;
 import com.fastasyncworldedit.core.util.MainUtil;
 import com.fastasyncworldedit.core.util.MemUtil;
 import com.fastasyncworldedit.core.util.RandomTextureUtil;
@@ -208,7 +209,7 @@ public class Fawe {
     }
 
     public static boolean isMainThread() {
-        return instance == null || instance.thread == Thread.currentThread();
+        return instance == null || instance.thread == Thread.currentThread() || FoliaSupport.isTickThread();
     }
 
     /**

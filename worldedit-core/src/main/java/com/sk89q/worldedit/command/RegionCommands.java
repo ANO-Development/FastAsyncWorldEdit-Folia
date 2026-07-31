@@ -885,7 +885,7 @@ public class RegionCommands {
     @Confirm(Confirm.Processor.REGION)
     public int forest(
             Actor actor, EditSession editSession, @Selection Region region,
-            @Arg(desc = "The type of tree to place", def = "tree")
+            @Arg(desc = "The type of tree to place", def = "minecraft:oak_checked")
                     TreeType type,
             @Arg(desc = "The density of the forest", def = "5")
                     double density

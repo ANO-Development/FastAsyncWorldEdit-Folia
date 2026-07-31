@@ -32,6 +32,8 @@ import com.sk89q.worldedit.world.block.BlockState;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 
+import java.util.Arrays;
+
 //FAWE start - implements SlottableBlockBag
 public class BukkitPlayerBlockBag extends BlockBag implements SlottableBlockBag {
 //FAWE end
@@ -53,7 +55,10 @@ public class BukkitPlayerBlockBag extends BlockBag implements SlottableBlockBag 
      */
     private void loadInventory() {
         if (items == null) {
-            items = player.getInventory().getContents();
+            BukkitPlayer owner = WorldEditPlugin.getInstance().wrapPlayer(player);
+            items = TaskManager.taskManager().syncWith(() -> Arrays.stream(player.getInventory().getContents())
+                    .map(item -> item == null ? null : item.clone())
+                    .toArray(ItemStack[]::new), owner);
         }
     }
 
@@ -172,10 +177,11 @@ public class BukkitPlayerBlockBag extends BlockBag implements SlottableBlockBag 
     @Override
     public void flushChanges() {
         if (items != null) {
-            TaskManager.taskManager().sync(() -> {
+            BukkitPlayer owner = WorldEditPlugin.getInstance().wrapPlayer(player);
+            TaskManager.taskManager().syncWith(() -> {
                 player.getInventory().setContents(items);
                 return null;
-            });
+            }, owner);
             items = null;
         }
     }

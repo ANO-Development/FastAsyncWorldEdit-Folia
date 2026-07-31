@@ -19,7 +19,6 @@
 
 package com.sk89q.worldedit.function.entity;
 
-import com.fastasyncworldedit.core.util.TaskManager;
 import com.sk89q.worldedit.WorldEdit;
 import com.sk89q.worldedit.WorldEditException;
 import com.sk89q.worldedit.entity.BaseEntity;
@@ -193,7 +192,7 @@ public class ExtentEntityCopy implements EntityFunction {
                                 uuid
                         );
                     } else {
-                        TaskManager.taskManager().sync(entity::remove);
+                        entity.remove();
                         //FAWE end
                     }
                 }

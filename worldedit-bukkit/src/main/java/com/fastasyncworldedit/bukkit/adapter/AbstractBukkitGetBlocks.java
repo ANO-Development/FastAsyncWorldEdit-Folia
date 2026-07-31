@@ -24,6 +24,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Supplier;
 
 public abstract class AbstractBukkitGetBlocks<ServerLevel, LevelChunk> extends CharGetBlocks {
 
@@ -65,6 +66,14 @@ public abstract class AbstractBukkitGetBlocks<ServerLevel, LevelChunk> extends C
             ServerLevel nmsWorld
     ) throws Exception;
 
+    protected <T> T callOnOwnerThread(Supplier<T> function) {
+        return function.get();
+    }
+
+    protected boolean isOwnerThread() {
+        return false;
+    }
+
     @Override
     @SuppressWarnings({"rawtypes", "unchecked"})
     public synchronized <T extends Future<T>> T call(IQueueExtent<? extends IChunk> owner, IChunkSet set, Runnable finalizer) {
@@ -89,18 +98,14 @@ public abstract class AbstractBukkitGetBlocks<ServerLevel, LevelChunk> extends C
         final int finalCopyKey = copyKey;
         // Run immediately if possible
         if (chunk != null) {
-            return tryInternalCall(set, finalizer, finalCopyKey, chunk, nmsWorld);
+            LevelChunk loadedChunk = chunk;
+            return callOnOwnerThread(() -> tryInternalCall(set, finalizer, finalCopyKey, loadedChunk, nmsWorld));
         }
         // Submit via the STQE as that will help handle excessive queuing by waiting for the submission count to fall below the
         // target size
         final Extent extent = FaweThreadUtil.getCurrentExtent();
-        nmsChunkFuture.thenApply(nmsChunk -> owner.submitTaskUnchecked(() -> (T) tryWrappedInternalCall(
-                set,
-                finalizer,
-                finalCopyKey,
-                nmsChunk,
-                nmsWorld,
-                extent
+        nmsChunkFuture.thenApply(nmsChunk -> owner.submitTaskUnchecked(() -> (T) callOnOwnerThread(
+                () -> tryWrappedInternalCall(set, finalizer, finalCopyKey, nmsChunk, nmsWorld, extent)
         )));
         // If we have re-submitted, return a completed future to prevent potential deadlocks where a future reliant on the
         // above submission is halting the BlockingExecutor, and preventing the above task from actually running. The futures
@@ -149,6 +154,26 @@ public abstract class AbstractBukkitGetBlocks<ServerLevel, LevelChunk> extends C
             Exception {
         if (!syncTasks.isEmpty()) {
             QueueHandler queueHandler = Fawe.instance().getQueueHandler();
+
+            if (isOwnerThread()) {
+                try {
+                    for (Runnable task : syncTasks) {
+                        if (task != null) {
+                            task.run();
+                        }
+                    }
+                    if (callback != null) {
+                        return (T) (Future) queueHandler.async(callback, null);
+                    }
+                    if (finalizer != null) {
+                        return (T) (Future) queueHandler.async(finalizer, null);
+                    }
+                    return null;
+                } catch (Throwable e) {
+                    LOGGER.error("Error performing owner-thread final chunk calling at {},{}", chunkX, chunkZ, e);
+                    throw e;
+                }
+            }
 
             // Chain the sync tasks and the callback
             Callable<Future<?>> chain = () -> {

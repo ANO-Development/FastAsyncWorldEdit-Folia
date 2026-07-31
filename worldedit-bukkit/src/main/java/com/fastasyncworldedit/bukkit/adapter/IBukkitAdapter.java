@@ -30,6 +30,7 @@ import com.sk89q.worldedit.world.gamemode.GameModes;
 import com.sk89q.worldedit.world.item.ItemType;
 import com.sk89q.worldedit.world.item.ItemTypes;
 import org.bukkit.Bukkit;
+import org.bukkit.Chunk;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.Registry;
@@ -39,6 +40,8 @@ import org.bukkit.block.data.BlockData;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 
@@ -388,7 +391,20 @@ public interface IBukkitAdapter {
      * @return list of {@link org.bukkit.entity.Entity}
      */
     default List<org.bukkit.entity.Entity> getEntities(org.bukkit.World world) {
-        return TaskManager.taskManager().sync(world::getEntities);
+        List<org.bukkit.entity.Entity> entities = new ArrayList<>();
+        for (Chunk chunk : world.getLoadedChunks()) {
+            entities.addAll(getEntities(world, chunk.getX(), chunk.getZ()));
+        }
+        return entities;
+    }
+
+    default List<org.bukkit.entity.Entity> getEntities(org.bukkit.World world, int chunkX, int chunkZ) {
+        return TaskManager.taskManager().syncAt(() -> {
+            if (!world.isChunkLoaded(chunkX, chunkZ)) {
+                return List.of();
+            }
+            return Arrays.asList(world.getChunkAt(chunkX, chunkZ).getEntities());
+        }, BukkitAdapter.adapt(world), chunkX, chunkZ);
     }
 
     /**

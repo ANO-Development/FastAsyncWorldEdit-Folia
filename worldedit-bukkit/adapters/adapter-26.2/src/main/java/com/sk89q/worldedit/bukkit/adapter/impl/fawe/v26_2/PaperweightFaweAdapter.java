@@ -3,7 +3,6 @@ package com.sk89q.worldedit.bukkit.adapter.impl.fawe.v26_2;
 import com.fastasyncworldedit.bukkit.adapter.FaweAdapter;
 import com.fastasyncworldedit.bukkit.adapter.NMSRelighterFactory;
 import com.fastasyncworldedit.core.FaweCache;
-import com.fastasyncworldedit.core.entity.LazyBaseEntity;
 import com.fastasyncworldedit.core.extent.processor.PlacementStateProcessor;
 import com.fastasyncworldedit.core.extent.processor.lighting.RelighterFactory;
 import com.fastasyncworldedit.core.nbt.FaweCompoundTag;
@@ -21,6 +20,7 @@ import com.sk89q.worldedit.EditSession;
 import com.sk89q.worldedit.MaxChangedBlocksException;
 import com.sk89q.worldedit.blocks.BaseItemStack;
 import com.sk89q.worldedit.bukkit.BukkitAdapter;
+import com.sk89q.worldedit.bukkit.BukkitEntity;
 import com.sk89q.worldedit.bukkit.adapter.BukkitImplAdapter;
 import com.sk89q.worldedit.bukkit.adapter.impl.v26_2.PaperweightAdapter;
 import com.sk89q.worldedit.bukkit.adapter.impl.fawe.v26_2.regen.PaperweightRegen;
@@ -56,6 +56,8 @@ import com.sk89q.worldedit.world.generation.TreeType;
 import com.sk89q.worldedit.world.item.ItemType;
 import com.sk89q.worldedit.world.registry.BlockMaterial;
 import io.papermc.lib.PaperLib;
+import io.papermc.paper.threadedregions.RegionizedWorldData;
+import io.papermc.paper.threadedregions.TickRegionScheduler;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Registry;
 import net.minecraft.core.RegistryAccess;
@@ -345,21 +347,17 @@ public final class PaperweightFaweAdapter extends FaweAdapter<net.minecraft.nbt.
     @Override
     public BaseEntity getEntity(org.bukkit.entity.Entity entity) {
         Preconditions.checkNotNull(entity);
-
-        CraftEntity craftEntity = ((CraftEntity) entity);
-        Entity mcEntity = craftEntity.getHandle();
-
-        String id = getEntityId(mcEntity);
-        EntityType type = com.sk89q.worldedit.world.entity.EntityTypes.get(id);
-        Supplier<LinCompoundTag> saveTag = () -> {
+        return TaskManager.taskManager().syncWith(() -> {
+            Entity mcEntity = ((CraftEntity) entity).getHandle();
+            String id = getEntityId(mcEntity);
+            EntityType type = com.sk89q.worldedit.world.entity.EntityTypes.get(id);
             final LinValueOutput output = createOutput();
             if (!mcEntity.save(output)) {
                 return null;
             }
-            //add Id for AbstractChangeSet to work
-            return output.toBuilder().putString("Id", id).build();
-        };
-        return new LazyBaseEntity(type, saveTag);
+            LinCompoundTag snapshot = output.toBuilder().putString("Id", id).build();
+            return new BaseEntity(type, LazyReference.from(() -> snapshot));
+        }, new BukkitEntity(entity));
     }
 
     @Override
@@ -546,21 +544,32 @@ public final class PaperweightFaweAdapter extends FaweAdapter<net.minecraft.nbt.
 
     @Override
     protected void preCaptureStates(final ServerLevel serverLevel) {
-        serverLevel.captureTreeGeneration = true;
-        serverLevel.captureBlockStates = true;
+        RegionizedWorldData worldData = currentWorldData(serverLevel);
+        worldData.captureTreeGeneration = true;
+        worldData.captureBlockStates = true;
     }
 
     @Override
     protected List<org.bukkit.block.BlockState> getCapturedBlockStatesCopy(final ServerLevel serverLevel) {
-        return new ArrayList<>(serverLevel.capturedBlockStates.values());
+        return new ArrayList<>(currentWorldData(serverLevel).capturedBlockStates.values());
     }
 
     @Override
     protected void postCaptureBlockStates(final ServerLevel serverLevel) {
-        serverLevel.captureBlockStates = false;
-        serverLevel.captureTreeGeneration = false;
-        serverLevel.capturedBlockStates.clear();
+        RegionizedWorldData worldData = currentWorldData(serverLevel);
+        worldData.captureBlockStates = false;
+        worldData.captureTreeGeneration = false;
+        worldData.capturedBlockStates.clear();
     }
+
+    private RegionizedWorldData currentWorldData(ServerLevel serverLevel) {
+        RegionizedWorldData worldData = TickRegionScheduler.getCurrentRegionizedWorldData();
+        if (worldData == null || worldData.world != serverLevel) {
+            throw new IllegalStateException("Feature capture must execute on the owning Folia region");
+        }
+        return worldData;
+    }
+
     @Override
     public boolean generateFeature(ConfiguredFeatureType feature, World world, EditSession editSession, BlockVector3 pt) {
         ServerLevel serverLevel = getServerLevel(world);
@@ -572,7 +581,7 @@ public final class PaperweightFaweAdapter extends FaweAdapter<net.minecraft.nbt.
                 .getValue(Identifier.tryParse(feature.id()));
 
         FaweBlockStateListPopulator populator = new FaweBlockStateListPopulator(serverLevel);
-        List<CraftBlockState> placed = TaskManager.taskManager().sync(() -> {
+        List<CraftBlockState> placed = TaskManager.taskManager().syncAt(() -> {
             preCaptureStates(serverLevel);
             try {
                 if (!configuredFeature.place(
@@ -584,12 +593,12 @@ public final class PaperweightFaweAdapter extends FaweAdapter<net.minecraft.nbt.
                     return null;
                 }
                 List<CraftBlockState> placedBlocks = new ArrayList<>(populator.getSnapshotBlocks());
-                placedBlocks.addAll(serverLevel.capturedBlockStates.values());
+                placedBlocks.addAll(currentWorldData(serverLevel).capturedBlockStates.values());
                 return placedBlocks;
             } finally {
                 postCaptureBlockStates(serverLevel);
             }
-        });
+        }, BukkitAdapter.adapt(world), pt.x() >> 4, pt.z() >> 4);
 
         return placeFeatureIntoSession(editSession, populator, placed);
     }
@@ -609,7 +618,7 @@ public final class PaperweightFaweAdapter extends FaweAdapter<net.minecraft.nbt.
         TransformerLevelAccessor access = new TransformerLevelAccessor();
         FaweBlockStateListPopulator populator = new FaweBlockStateListPopulator(serverLevel);
         access.setDelegate(populator);
-        List<CraftBlockState> placed = TaskManager.taskManager().sync(() -> {
+        List<CraftBlockState> placed = TaskManager.taskManager().syncAt(() -> {
             preCaptureStates(serverLevel);
             try {
                 StructureStart structureStart = structure.generate(
@@ -652,13 +661,13 @@ public final class PaperweightFaweAdapter extends FaweAdapter<net.minecraft.nbt.
                             ), chunkPosx
                     ));
                     List<CraftBlockState> placedBlocks = new ArrayList<>(populator.getSnapshotBlocks());
-                    placedBlocks.addAll(serverLevel.capturedBlockStates.values());
+                    placedBlocks.addAll(currentWorldData(serverLevel).capturedBlockStates.values());
                     return placedBlocks;
                 }
             } finally {
                 postCaptureBlockStates(serverLevel);
             }
-        });
+        }, BukkitAdapter.adapt(world), pt.x() >> 4, pt.z() >> 4);
 
         return placeFeatureIntoSession(editSession, populator, placed);
     }
@@ -679,7 +688,7 @@ public final class PaperweightFaweAdapter extends FaweAdapter<net.minecraft.nbt.
                 .getValue(Identifier.tryParse(treeType.id()));
 
         FaweBlockStateListPopulator populator = new FaweBlockStateListPopulator(serverLevel);
-        List<CraftBlockState> placed = TaskManager.taskManager().sync(() -> {
+        List<CraftBlockState> placed = TaskManager.taskManager().syncAt(() -> {
             preCaptureStates(serverLevel);
             try {
                 if (!placedFeature.place(
@@ -691,12 +700,12 @@ public final class PaperweightFaweAdapter extends FaweAdapter<net.minecraft.nbt.
                     return null;
                 }
                 List<CraftBlockState> placedBlocks = new ArrayList<>(populator.getSnapshotBlocks());
-                placedBlocks.addAll(serverLevel.capturedBlockStates.values());
+                placedBlocks.addAll(currentWorldData(serverLevel).capturedBlockStates.values());
                 return placedBlocks;
             } finally {
                 postCaptureBlockStates(serverLevel);
             }
-        });
+        }, BukkitAdapter.adapt(world), pt.x() >> 4, pt.z() >> 4);
 
         return placeFeatureIntoSession(session, populator, placed);
     }

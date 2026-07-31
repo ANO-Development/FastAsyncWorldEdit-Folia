@@ -232,6 +232,11 @@ public class TestOfflinePermissible implements OfflinePlayer, Permissible {
     }
 
     @Override
+    public Location getRespawnLocation(boolean loadLocationAndValidateWorld) {
+        throw new UnsupportedOperationException("Not supported yet.");
+    }
+
+    @Override
     public Map<String, Object> serialize() {
         throw new UnsupportedOperationException("Not supported yet.");
     }

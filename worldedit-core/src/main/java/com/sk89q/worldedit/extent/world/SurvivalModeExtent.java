@@ -19,8 +19,6 @@
 
 package com.sk89q.worldedit.extent.world;
 
-import com.fastasyncworldedit.core.util.TaskManager;
-import com.fastasyncworldedit.core.util.task.RunnableVal;
 import com.sk89q.worldedit.WorldEditException;
 import com.sk89q.worldedit.blocks.BaseItemStack;
 import com.sk89q.worldedit.extent.AbstractDelegateExtent;
@@ -99,14 +97,9 @@ public class SurvivalModeExtent extends AbstractDelegateExtent {
             Collection<BaseItemStack> drops = world.getBlockDrops(location);
             boolean canSet = super.setBlock(location, block);
             if (canSet) {
-                TaskManager.taskManager().sync(new RunnableVal<>() {
-                    @Override
-                    public void run(Object value) {
-                        for (BaseItemStack stack : drops) {
-                            world.dropItem(location.toVector3(), stack);
-                        }
-                    }
-                });
+                for (BaseItemStack stack : drops) {
+                    world.dropItem(location.toVector3(), stack);
+                }
 
                 return true;
             } else {

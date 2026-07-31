@@ -77,10 +77,12 @@ public abstract class StarlightRelighter<SERVER_LEVEL, CHUNK_POS> implements Rel
             if (i != coords.size()) {
                 LOGGER.warn("Processed {} chunks instead of {}", i, coords.size());
             }
-            // post process chunks on main thread
-            TaskManager.taskManager().task(() -> postProcessChunks(coords));
-            // call callback on our own threads
-            TaskManager.taskManager().async(andThen);
+            postProcessChunks(coords).whenComplete((ignored, throwable) -> {
+                if (throwable != null) {
+                    LOGGER.error("Error post-processing relit chunks", throwable);
+                }
+                TaskManager.taskManager().async(andThen);
+            });
         };
     }
 
@@ -90,7 +92,7 @@ public abstract class StarlightRelighter<SERVER_LEVEL, CHUNK_POS> implements Rel
             IntConsumer processCallback
     );
 
-    protected abstract void postProcessChunks(Set<CHUNK_POS> coords);
+    protected abstract CompletableFuture<Void> postProcessChunks(Set<CHUNK_POS> coords);
 
     /*
      * Processes a set of chunks and runs an action afterwards.

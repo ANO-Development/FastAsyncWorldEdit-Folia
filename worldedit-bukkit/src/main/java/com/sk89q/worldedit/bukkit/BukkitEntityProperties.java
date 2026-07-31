@@ -19,6 +19,7 @@
 
 package com.sk89q.worldedit.bukkit;
 
+import com.fastasyncworldedit.core.util.TaskManager;
 import com.sk89q.worldedit.entity.metadata.EntityProperties;
 import org.bukkit.entity.AbstractVillager;
 import org.bukkit.entity.Ambient;
@@ -62,10 +63,12 @@ class BukkitEntityProperties implements EntityProperties {
     }
 
     private final Entity entity;
+    private final BukkitEntity owner;
 
     BukkitEntityProperties(Entity entity) {
         checkNotNull(entity);
         this.entity = entity;
+        this.owner = new BukkitEntity(entity);
     }
 
     @Override
@@ -148,12 +151,18 @@ class BukkitEntityProperties implements EntityProperties {
 
     @Override
     public boolean isTamed() {
-        return entity instanceof Tameable && ((Tameable) entity).isTamed();
+        return entity instanceof Tameable && TaskManager.taskManager().syncWith(
+                () -> ((Tameable) entity).isTamed(),
+                owner
+        );
     }
 
     @Override
     public boolean isTagged() {
-        return entity instanceof LivingEntity && entity.getCustomName() != null;
+        return entity instanceof LivingEntity && TaskManager.taskManager().syncWith(
+                () -> entity.getCustomName() != null,
+                owner
+        );
     }
 
     @Override

@@ -5,6 +5,7 @@ import com.fastasyncworldedit.core.Fawe;
 import com.fastasyncworldedit.core.queue.IChunkCache;
 import com.fastasyncworldedit.core.queue.IChunkGet;
 import com.fastasyncworldedit.core.queue.implementation.chunk.ChunkCache;
+import com.fastasyncworldedit.core.util.TaskManager;
 import com.google.common.collect.ImmutableList;
 import com.sk89q.worldedit.bukkit.BukkitAdapter;
 import com.sk89q.worldedit.bukkit.WorldEditPlugin;
@@ -42,6 +43,9 @@ import org.bukkit.generator.BiomeProvider;
 import javax.annotation.Nonnull;
 import java.lang.reflect.Field;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.OptionalLong;
 import java.util.UUID;
@@ -52,7 +56,7 @@ import static net.minecraft.core.registries.Registries.BIOME;
 
 public class PaperweightRegen extends Regenerator {
 
-    private static final String REGEN_WORLD_NAME = "faweregentempworld";
+    private static final String REGEN_WORLD_NAME_PREFIX = "faweregentempworld_";
 
     private static final Field serverWorldsField;
     private static final Field paperConfigField;
@@ -85,6 +89,7 @@ public class PaperweightRegen extends Regenerator {
     private ServerLevel originalServerWorld;
     private ServerLevel freshWorld;
     private LevelStorageSource.LevelStorageAccess session;
+    private final String regenWorldName = REGEN_WORLD_NAME_PREFIX + UUID.randomUUID().toString().replace("-", "");
 
     private Path tempDir;
 
@@ -127,7 +132,7 @@ public class PaperweightRegen extends Regenerator {
         org.bukkit.generator.ChunkGenerator generator = originalBukkitWorld.getGenerator();
         LevelStorageSource levelStorageSource = LevelStorageSource.createDefault(tempDir);
         ResourceKey<LevelStem> levelStemResourceKey = getWorldDimKey(environment);
-        session = levelStorageSource.createAccess(REGEN_WORLD_NAME);
+        session = levelStorageSource.createAccess(regenWorldName);
 
         MinecraftServer server = originalServerWorld.getCraftServer().getServer();
         WorldOptions originalOpts = originalServerWorld.worldGenSettings.options();
@@ -140,7 +145,7 @@ public class PaperweightRegen extends Regenerator {
         );
 
         PaperWorldLoader.LoadedWorldData loadedWorldData = new PaperWorldLoader.LoadedWorldData(
-                REGEN_WORLD_NAME,
+                regenWorldName,
                 UUID.randomUUID(),
                 new PaperWorldPDC((CraftPersistentDataContainer) originalBukkitWorld.getPersistentDataContainer()),
                 originalServerWorld.serverLevelData
@@ -207,7 +212,10 @@ public class PaperweightRegen extends Regenerator {
             }
         }).get();
         freshWorld.noSave = true;
-        removeWorldFromWorldsMap();
+        TaskManager.taskManager().syncGlobal(() -> {
+            removeWorldFromWorldsMap();
+            return null;
+        });
         if (paperConfigField != null) {
             paperConfigField.set(freshWorld, originalServerWorld.paperConfig());
         }
@@ -217,32 +225,44 @@ public class PaperweightRegen extends Regenerator {
     @Override
     protected void cleanup() {
         try {
-            session.close();
+            if (session != null) {
+                session.close();
+            }
         } catch (Exception ignored) {
         }
 
         //shutdown chunk provider
-        try {
-            Fawe.instance().getQueueHandler().sync(() -> {
-                try {
-                    freshWorld.getChunkSource().getDataStorage().cache.clear();
-                    freshWorld.getChunkSource().close(false);
-                } catch (Exception e) {
-                    throw new RuntimeException(e);
-                }
-            });
-        } catch (Exception ignored) {
+        if (freshWorld != null) {
+            try {
+                TaskManager.taskManager().syncGlobal(() -> {
+                    try {
+                        freshWorld.getChunkSource().getDataStorage().cache.clear();
+                        freshWorld.getChunkSource().close(false);
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                    return null;
+                });
+            } catch (Exception ignored) {
+            }
         }
 
-        //remove world from server
         try {
-            Fawe.instance().getQueueHandler().sync(this::removeWorldFromWorldsMap);
+            TaskManager.taskManager().syncGlobal(() -> {
+                try {
+                    removeWorldFromWorldsMap();
+                } catch (RuntimeException ignored) {
+                }
+                return null;
+            });
         } catch (Exception ignored) {
         }
 
         //delete directory
         try {
-            SafeFiles.tryHardToDeleteDir(tempDir);
+            if (tempDir != null) {
+                SafeFiles.tryHardToDeleteDir(tempDir);
+            }
         } catch (Exception ignored) {
         }
     }
@@ -252,12 +272,36 @@ public class PaperweightRegen extends Regenerator {
         return new ChunkCache<>(BukkitAdapter.adapt(freshWorld.getWorld()));
     }
 
+    @Override
+    protected Collection<Integer> scheduleTaskPolling(Runnable pollTasks) {
+        com.sk89q.worldedit.world.World world = BukkitAdapter.adapt(freshWorld.getWorld());
+        int regionChunkShift = freshWorld.moonrise$getRegionChunkShift();
+        int minRegionX = (region.getMinimumPoint().x() >> 4) >> regionChunkShift;
+        int maxRegionX = (region.getMaximumPoint().x() >> 4) >> regionChunkShift;
+        int minRegionZ = (region.getMinimumPoint().z() >> 4) >> regionChunkShift;
+        int maxRegionZ = (region.getMaximumPoint().z() >> 4) >> regionChunkShift;
+        List<Integer> taskIds = new ArrayList<>((maxRegionX - minRegionX + 1) * (maxRegionZ - minRegionZ + 1));
+        for (int regionX = minRegionX; regionX <= maxRegionX; regionX++) {
+            for (int regionZ = minRegionZ; regionZ <= maxRegionZ; regionZ++) {
+                taskIds.add(TaskManager.taskManager().repeatAt(
+                        pollTasks,
+                        world,
+                        regionX << regionChunkShift,
+                        regionZ << regionChunkShift,
+                        1,
+                        1
+                ));
+            }
+        }
+        return taskIds;
+    }
+
     //util
     @SuppressWarnings("unchecked")
     private void removeWorldFromWorldsMap() {
         try {
             Map<String, World> map = (Map<String, World>) serverWorldsField.get(Bukkit.getServer());
-            map.remove(REGEN_WORLD_NAME);
+            map.remove(regenWorldName);
         } catch (IllegalAccessException e) {
             throw new RuntimeException(e);
         }

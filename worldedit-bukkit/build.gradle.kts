@@ -85,7 +85,7 @@ dependencies {
     api(project(":worldedit-core"))
     api(project(":worldedit-libs:bukkit"))
 
-    localImplementation(libs.paperApi) {
+    localImplementation("dev.folia:folia-api:26.2.build.1-beta") {
         exclude("junit", "junit")
         exclude(group = "org.slf4j", module = "slf4j-api")
     }
@@ -114,6 +114,10 @@ dependencies {
         exclude("com.sk89q.worldedit", "worldedit-core")
         exclude("com.sk89q.worldedit.worldedit-libs", "bukkit")
         exclude("com.sk89q.worldedit.worldedit-libs", "core")
+        exclude(group = "com.google.code.gson")
+        exclude(group = "com.google.guava")
+        exclude(group = "it.unimi.dsi")
+        exclude(group = "net.kyori")
     }
     compileOnly(libs.griefprevention) { isTransitive = false }
     compileOnly(libs.griefdefender) { isTransitive = false }
@@ -188,6 +192,9 @@ tasks.register<ShadowJar>("reobfShadowJar") {
 tasks.named<ShadowJar>("shadowJar") {
     archiveFileName.set("${rootProject.name}-Paper-${project.version}.${archiveExtension.getOrElse("jar")}")
     configurations.add(adapters)
+    if (providers.gradleProperty("fawe.foliaTarget").map(String::toBoolean).getOrElse(false)) {
+        exclude("com/fastasyncworldedit/bukkit/util/BukkitTaskManager.class")
+    }
     manifest {
         attributes(
             "paperweight-mappings-namespace" to "mojang",

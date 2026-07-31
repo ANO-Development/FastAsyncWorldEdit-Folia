@@ -22,6 +22,7 @@ dependencies {
     implementation(libs.snakeyaml)
     implementation(libs.guava)
     compileOnlyApi(libs.jsr305)
+    compileOnlyApi(libs.checkerqual)
     implementation(libs.gson)
 
     implementation(libs.jchronic) {

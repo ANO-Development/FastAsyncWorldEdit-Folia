@@ -326,7 +326,7 @@ public class GenerationCommands {
             Actor actor, LocalSession session, EditSession editSession,
             @Arg(desc = "The size of the forest, in blocks", def = "10")
                     int size,
-            @Arg(desc = "The type of forest", def = "tree")
+            @Arg(desc = "The type of forest", def = "minecraft:oak_checked")
                     TreeType type,
             @Arg(desc = "The density of the forest, between 0 and 100", def = "5")
                     double density

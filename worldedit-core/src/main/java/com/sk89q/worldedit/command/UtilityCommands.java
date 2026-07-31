@@ -26,7 +26,6 @@ import com.fastasyncworldedit.core.function.QuadFunction;
 import com.fastasyncworldedit.core.util.MainUtil;
 import com.fastasyncworldedit.core.util.MaskTraverser;
 import com.fastasyncworldedit.core.util.StringMan;
-import com.fastasyncworldedit.core.util.TaskManager;
 import com.fastasyncworldedit.core.util.image.ImageUtil;
 import com.fastasyncworldedit.core.util.task.DelegateConsumer;
 import com.sk89q.worldedit.EditSession;
@@ -718,10 +717,7 @@ public class UtilityCommands {
         flags.or(CreatureButcher.Flags.ARMOR_STAND, killArmorStands, "worldedit.butcher.armorstands");
         flags.or(CreatureButcher.Flags.WATER, killWater, "worldedit.butcher.water");
 
-        //FAWE start - run this sync
-        int finalRadius = radius;
-        int killed = TaskManager.taskManager().sync(() -> killMatchingEntities(finalRadius, actor, flags::createFunction));
-        //FAWE end
+        int killed = killMatchingEntities(radius, actor, flags::createFunction);
 
         actor.print(Caption.of(
                 "worldedit.butcher.killed",
@@ -751,9 +747,7 @@ public class UtilityCommands {
             return 0;
         }
 
-        //FAWE start - run this sync
-        int removed = TaskManager.taskManager().sync(() -> killMatchingEntities(radius, actor, remover::createFunction));
-        //FAWE end
+        int removed = killMatchingEntities(radius, actor, remover::createFunction);
         actor.print(Caption.of("worldedit.remove.removed", TextComponent.of(removed)));
         return removed;
     }

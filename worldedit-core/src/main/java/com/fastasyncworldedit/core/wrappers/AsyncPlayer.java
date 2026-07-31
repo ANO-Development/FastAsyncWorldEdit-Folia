@@ -3,7 +3,6 @@ package com.fastasyncworldedit.core.wrappers;
 import com.fastasyncworldedit.core.Fawe;
 import com.fastasyncworldedit.core.math.MutableBlockVector3;
 import com.fastasyncworldedit.core.util.TaskManager;
-import com.fastasyncworldedit.core.util.task.RunnableVal;
 import com.sk89q.worldedit.EditSession;
 import com.sk89q.worldedit.LocalSession;
 import com.sk89q.worldedit.WorldEdit;
@@ -17,6 +16,8 @@ import com.sk89q.worldedit.util.Location;
 import com.sk89q.worldedit.util.TargetBlock;
 import com.sk89q.worldedit.world.World;
 import com.sk89q.worldedit.world.block.BlockTypes;
+
+import java.util.function.Supplier;
 
 public class AsyncPlayer extends PlayerProxy {
 
@@ -38,42 +39,27 @@ public class AsyncPlayer extends PlayerProxy {
 
     @Override
     public void findFreePosition(Location searchPos) {
-        TaskManager.taskManager().sync(new RunnableVal<Boolean>() {
-            @Override
-            public void run(Boolean value) {
-                getBasePlayer().findFreePosition(searchPos);
-            }
-        });
+        runOnPlayer(() -> getBasePlayer().findFreePosition(searchPos));
     }
 
     @Override
     public void setOnGround(Location searchPos) {
-        TaskManager.taskManager().sync(new RunnableVal<Boolean>() {
-            @Override
-            public void run(Boolean value) {
-                getBasePlayer().setOnGround(searchPos);
-            }
-        });
+        runOnPlayer(() -> getBasePlayer().setOnGround(searchPos));
     }
 
     @Override
     public void findFreePosition() {
-        TaskManager.taskManager().sync(new RunnableVal<Boolean>() {
-            @Override
-            public void run(Boolean value) {
-                getBasePlayer().findFreePosition();
-            }
-        });
+        runOnPlayer(() -> getBasePlayer().findFreePosition());
     }
 
     @Override
     public boolean ascendLevel() {
-        return TaskManager.taskManager().sync(() -> getBasePlayer().ascendLevel());
+        return callOnPlayer(() -> getBasePlayer().ascendLevel());
     }
 
     @Override
     public boolean descendLevel() {
-        return TaskManager.taskManager().sync(() -> getBasePlayer().descendLevel());
+        return callOnPlayer(() -> getBasePlayer().descendLevel());
     }
 
     @Override
@@ -173,12 +159,12 @@ public class AsyncPlayer extends PlayerProxy {
 
     @Override
     public void setPosition(Vector3 pos, float pitch, float yaw) {
-        Fawe.instance().getQueueHandler().sync(() -> super.setPosition(pos, pitch, yaw));
+        runOnPlayer(() -> super.setPosition(pos, pitch, yaw));
     }
 
     @Override
     public Location getBlockTrace(int range, boolean useLastBlock) {
-        return TaskManager.taskManager().sync(() -> {
+        return callOnPlayer(() -> {
             TargetBlock tb = new TargetBlock(AsyncPlayer.this, range, 0.2D);
             return useLastBlock ? tb.getAnyTargetBlock() : tb.getTargetBlock();
         });
@@ -186,7 +172,7 @@ public class AsyncPlayer extends PlayerProxy {
 
     @Override
     public Location getBlockTraceFace(int range, boolean useLastBlock) {
-        return TaskManager.taskManager().sync(() -> {
+        return callOnPlayer(() -> {
             TargetBlock tb = new TargetBlock(AsyncPlayer.this, range, 0.2D);
             return useLastBlock ? tb.getAnyTargetBlockFace() : tb.getTargetBlockFace();
         });
@@ -194,7 +180,7 @@ public class AsyncPlayer extends PlayerProxy {
 
     @Override
     public Location getSolidBlockTrace(int range) {
-        return TaskManager.taskManager().sync(() -> {
+        return callOnPlayer(() -> {
             TargetBlock tb = new TargetBlock(AsyncPlayer.this, range, 0.2D);
             return tb.getSolidTargetBlock();
         });
@@ -207,7 +193,7 @@ public class AsyncPlayer extends PlayerProxy {
 
     @Override
     public boolean passThroughForwardWall(int range) {
-        return TaskManager.taskManager().sync(() -> {
+        return callOnPlayer(() -> {
             int searchDist = 0;
             TargetBlock hitBlox = new TargetBlock(AsyncPlayer.this, range, 0.2);
             Extent world = getLocation().getExtent();
@@ -253,6 +239,17 @@ public class AsyncPlayer extends PlayerProxy {
 
             return false;
         });
+    }
+
+    private void runOnPlayer(Runnable runnable) {
+        callOnPlayer(() -> {
+            runnable.run();
+            return null;
+        });
+    }
+
+    private <T> T callOnPlayer(Supplier<T> supplier) {
+        return TaskManager.taskManager().syncWith(supplier, getBasePlayer());
     }
 
 }

@@ -21,7 +21,9 @@ package com.sk89q.worldedit.bukkit;
 
 import com.fastasyncworldedit.bukkit.BukkitPermissionAttachmentManager;
 import com.fastasyncworldedit.bukkit.FaweBukkit;
+import com.fastasyncworldedit.bukkit.util.FoliaTaskManager;
 import com.fastasyncworldedit.core.Fawe;
+import com.fastasyncworldedit.core.util.TaskManager;
 import com.fastasyncworldedit.core.util.UpdateNotification;
 import com.fastasyncworldedit.core.util.WEManager;
 import com.google.common.base.Joiner;
@@ -76,8 +78,6 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.world.WorldInitEvent;
-import org.bukkit.metadata.FixedMetadataValue;
-import org.bukkit.metadata.MetadataValue;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.enginehub.piston.CommandManager;
@@ -95,6 +95,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.jar.Attributes;
 
 import static com.google.common.base.Preconditions.checkNotNull;
@@ -117,6 +120,7 @@ public class WorldEditPlugin extends JavaPlugin {
     private BukkitServerInterface platform;
     private BukkitConfiguration config;
     private BukkitPermissionAttachmentManager permissionAttachmentManager;
+    private final ConcurrentMap<UUID, BukkitPlayer> playerCache = new ConcurrentHashMap<>();
     // Fawe start
     private BukkitCommandSender bukkitConsoleCommandSender;
     // Fawe end
@@ -466,7 +470,11 @@ public class WorldEditPlugin extends JavaPlugin {
         if (config != null) {
             config.unload();
         }
-        this.getServer().getScheduler().cancelTasks(this);
+        TaskManager taskManager = TaskManager.taskManager();
+        if (taskManager instanceof FoliaTaskManager foliaTaskManager) {
+            foliaTaskManager.cancelAll();
+        }
+        playerCache.clear();
     }
 
     /**
@@ -623,37 +631,22 @@ public class WorldEditPlugin extends JavaPlugin {
      * @return a wrapped player
      */
     public BukkitPlayer wrapPlayer(Player player) {
-        //FAWE start - Use cache over returning a direct BukkitPlayer
-        BukkitPlayer wePlayer = getCachedPlayer(player);
-        if (wePlayer != null) {
-            return wePlayer;
-        }
-        synchronized (player) {
-            BukkitPlayer bukkitPlayer = getCachedPlayer(player);
-            if (bukkitPlayer == null) {
-                bukkitPlayer = new BukkitPlayer(this, player);
-                player.setMetadata("WE", new FixedMetadataValue(this, bukkitPlayer));
-            }
-            return bukkitPlayer;
-        }
-        //FAWE end
+        return playerCache.computeIfAbsent(player.getUniqueId(), ignored -> new BukkitPlayer(this, player));
     }
 
     //FAWE start
     BukkitPlayer getCachedPlayer(Player player) {
-        List<MetadataValue> meta = player.getMetadata("WE");
-        if (meta.isEmpty()) {
-            return null;
-        }
-        return (BukkitPlayer) meta.get(0).value();
+        return playerCache.get(player.getUniqueId());
     }
 
     BukkitPlayer reCachePlayer(Player player) {
-        synchronized (player) {
-            BukkitPlayer wePlayer = new BukkitPlayer(this, player);
-            player.setMetadata("WE", new FixedMetadataValue(this, wePlayer));
-            return wePlayer;
-        }
+        BukkitPlayer wePlayer = new BukkitPlayer(this, player);
+        playerCache.put(player.getUniqueId(), wePlayer);
+        return wePlayer;
+    }
+
+    void removeCachedPlayer(Player player) {
+        playerCache.remove(player.getUniqueId());
     }
     //FAWE end
 

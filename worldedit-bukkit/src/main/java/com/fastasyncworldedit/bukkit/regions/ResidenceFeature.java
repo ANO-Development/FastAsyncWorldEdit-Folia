@@ -6,6 +6,7 @@ import com.bekvon.bukkit.residence.protection.CuboidArea;
 import com.fastasyncworldedit.core.regions.FaweMask;
 import com.fastasyncworldedit.core.util.TaskManager;
 import com.sk89q.worldedit.bukkit.BukkitAdapter;
+import com.sk89q.worldedit.bukkit.WorldEditPlugin;
 import com.sk89q.worldedit.internal.util.LogManagerCompat;
 import com.sk89q.worldedit.regions.CuboidRegion;
 import org.apache.logging.log4j.Logger;
@@ -27,13 +28,18 @@ public class ResidenceFeature extends BukkitMaskManager implements Listener {
         return residence != null &&
                 (residence.getOwner().equals(player.getName()) ||
                         residence.getOwner().equals(player.getUniqueId().toString()) ||
-                        type == MaskType.MEMBER && TaskManager.taskManager().sync(() -> residence
-                                .getPermissions()
-                                .playerHas(player, "build", false)));
+                        type == MaskType.MEMBER && TaskManager.taskManager().syncWith(
+                                () -> residence.getPermissions().playerHas(player, "build", false),
+                                WorldEditPlugin.getInstance().wrapPlayer(player)
+                        ));
     }
 
     @Override
     public FaweMask getMask(final com.sk89q.worldedit.entity.Player wePlayer, final MaskType type, boolean isWhitelist) {
+        return TaskManager.taskManager().syncWith(() -> getMaskOnOwner(wePlayer, type), wePlayer);
+    }
+
+    private FaweMask getMaskOnOwner(com.sk89q.worldedit.entity.Player wePlayer, MaskType type) {
         final Player player = BukkitAdapter.adapt(wePlayer);
         final Location location = player.getLocation();
         ClaimedResidence residence = Residence.getInstance().getResidenceManager().getByLoc(location);

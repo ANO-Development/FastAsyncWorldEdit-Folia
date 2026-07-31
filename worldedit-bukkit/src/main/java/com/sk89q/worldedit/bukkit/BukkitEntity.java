@@ -19,19 +19,23 @@
 
 package com.sk89q.worldedit.bukkit;
 
+import com.fastasyncworldedit.core.util.FoliaSupport;
 import com.fastasyncworldedit.core.util.TaskManager;
 import com.sk89q.worldedit.bukkit.adapter.BukkitImplAdapter;
 import com.sk89q.worldedit.entity.BaseEntity;
 import com.sk89q.worldedit.entity.Entity;
-import com.sk89q.worldedit.entity.Player;
 import com.sk89q.worldedit.entity.metadata.EntityProperties;
 import com.sk89q.worldedit.extent.Extent;
+import com.sk89q.worldedit.internal.util.LogManagerCompat;
 import com.sk89q.worldedit.util.Location;
 import com.sk89q.worldedit.world.NullWorld;
+import org.apache.logging.log4j.Logger;
 import org.bukkit.entity.EntityType;
 
 import javax.annotation.Nullable;
 import java.lang.ref.WeakReference;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 
@@ -42,6 +46,7 @@ import static com.google.common.base.Preconditions.checkNotNull;
 public class BukkitEntity implements Entity {
 //FAWE end
 
+    private static final Logger LOGGER = LogManagerCompat.getLogger();
     private final WeakReference<org.bukkit.entity.Entity> entityRef;
     //FAWE start
     private final EntityType type;
@@ -60,11 +65,16 @@ public class BukkitEntity implements Entity {
         this.entityRef = new WeakReference<>(entity);
     }
 
+    @Nullable
+    public org.bukkit.entity.Entity getEntity() {
+        return entityRef.get();
+    }
+
     @Override
     public Extent getExtent() {
         org.bukkit.entity.Entity entity = entityRef.get();
         if (entity != null) {
-            return BukkitAdapter.adapt(entity.getWorld());
+            return TaskManager.taskManager().syncWith(() -> BukkitAdapter.adapt(entity.getWorld()), this);
         } else {
             return NullWorld.getInstance();
         }
@@ -74,7 +84,7 @@ public class BukkitEntity implements Entity {
     public Location getLocation() {
         org.bukkit.entity.Entity entity = entityRef.get();
         if (entity != null) {
-            return BukkitAdapter.adapt(entity.getLocation());
+            return TaskManager.taskManager().syncWith(() -> BukkitAdapter.adapt(entity.getLocation()), this);
         } else {
             return new Location(NullWorld.getInstance());
         }
@@ -84,7 +94,7 @@ public class BukkitEntity implements Entity {
     public boolean setLocation(Location location) {
         org.bukkit.entity.Entity entity = entityRef.get();
         if (entity != null) {
-            return entity.teleport(BukkitAdapter.adapt(location));
+            return awaitTeleport(entity, entity.teleportAsync(BukkitAdapter.adapt(location)));
         } else {
             return false;
         }
@@ -94,16 +104,13 @@ public class BukkitEntity implements Entity {
     public BaseEntity getState() {
         org.bukkit.entity.Entity entity = entityRef.get();
         if (entity != null) {
-            if (entity instanceof Player) {
-                return null;
-            }
-
-            BukkitImplAdapter adapter = WorldEditPlugin.getInstance().getBukkitImplAdapter();
-            if (adapter != null) {
-                return adapter.getEntity(entity);
-            } else {
-                return null;
-            }
+            return TaskManager.taskManager().syncWith(() -> {
+                if (entity instanceof org.bukkit.entity.Player) {
+                    return null;
+                }
+                BukkitImplAdapter adapter = WorldEditPlugin.getInstance().getBukkitImplAdapter();
+                return adapter == null ? null : adapter.getEntity(entity);
+            }, this);
         } else {
             return null;
         }
@@ -111,9 +118,7 @@ public class BukkitEntity implements Entity {
 
     @Override
     public boolean remove() {
-        // synchronize the whole method, not just the remove operation as we always need to synchronize and
-        // can make sure the entity reference was not invalidated in the few milliseconds between the next available tick (lol)
-        return TaskManager.taskManager().sync(() -> {
+        return TaskManager.taskManager().syncWith(() -> {
             org.bukkit.entity.Entity entity = entityRef.get();
             if (entity != null) {
                 try {
@@ -125,7 +130,7 @@ public class BukkitEntity implements Entity {
             } else {
                 return true;
             }
-        });
+        }, this);
     }
 
     @SuppressWarnings("unchecked")
@@ -137,6 +142,34 @@ public class BukkitEntity implements Entity {
             return (T) new BukkitEntityProperties(entity);
         } else {
             return null;
+        }
+    }
+
+    private boolean awaitTeleport(org.bukkit.entity.Entity entity, CompletableFuture<Boolean> teleport) {
+        if (teleport.isDone()) {
+            try {
+                return teleport.join();
+            } catch (CompletionException exception) {
+                LOGGER.warn("Failed to teleport entity {}", entity.getUniqueId(), exception.getCause());
+                return false;
+            }
+        }
+        if (FoliaSupport.isTickThread()) {
+            teleport.whenComplete((success, throwable) -> {
+                if (throwable != null) {
+                    LOGGER.warn("Failed to teleport entity {}", entity.getUniqueId(), throwable);
+                }
+            });
+            return true;
+        }
+        try {
+            return teleport.get();
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            return false;
+        } catch (java.util.concurrent.ExecutionException exception) {
+            LOGGER.warn("Failed to teleport entity {}", entity.getUniqueId(), exception.getCause());
+            return false;
         }
     }
 

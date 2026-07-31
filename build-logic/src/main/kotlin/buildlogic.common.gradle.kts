@@ -29,15 +29,15 @@ dependencies {
         })
         constraints {
             add(conf, stringyLibs.getLibrary("guava")) {
-                version { require("33.3.1-jre") }
+                version { require("33.6.0-jre") }
                 because("Mojang provides Guava")
             }
             add(conf, stringyLibs.getLibrary("gson")) {
-                version { require("2.11.0") }
+                version { require("2.14.0") }
                 because("Mojang provides Gson")
             }
             add(conf, stringyLibs.getLibrary("fastutil")) {
-                version { require("8.5.15") }
+                version { require("8.5.18") }
                 because("Mojang provides FastUtil")
             }
         }

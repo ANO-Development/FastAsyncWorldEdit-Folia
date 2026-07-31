@@ -19,7 +19,6 @@
 
 package com.sk89q.worldedit.command.util;
 
-import com.fastasyncworldedit.core.util.TaskManager;
 import com.sk89q.worldedit.entity.metadata.EntityProperties;
 import com.sk89q.worldedit.function.EntityFunction;
 
@@ -147,9 +146,7 @@ public class EntityRemover {
             EntityProperties registryType = entity.getFacet(EntityProperties.class);
             if (registryType != null) {
                 if (type.matches(registryType)) {
-                    //FAWE start - Calling this async violates thread safety
-                    TaskManager.taskManager().sync(entity::remove);
-                    //FAWE end
+                    entity.remove();
                     return true;
                 }
             }

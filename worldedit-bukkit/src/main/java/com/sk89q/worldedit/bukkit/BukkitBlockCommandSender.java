@@ -29,7 +29,6 @@ import com.sk89q.worldedit.util.formatting.text.Component;
 import com.sk89q.worldedit.util.formatting.text.TextComponent;
 import com.sk89q.worldedit.util.formatting.text.adapter.bukkit.TextAdapter;
 import com.sk89q.worldedit.util.formatting.text.format.TextColor;
-import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.command.BlockCommandSender;
@@ -47,6 +46,9 @@ public class BukkitBlockCommandSender extends AbstractCommandBlockActor {
     private final BlockCommandSender sender;
     private final WorldEditPlugin plugin;
     private final UUID uuid;
+    private final BukkitWorld world;
+    private final int chunkX;
+    private final int chunkZ;
 
     public BukkitBlockCommandSender(WorldEditPlugin plugin, BlockCommandSender sender) {
         super(BukkitAdapter.adapt(checkNotNull(sender).getBlock().getLocation()));
@@ -55,6 +57,10 @@ public class BukkitBlockCommandSender extends AbstractCommandBlockActor {
         this.plugin = plugin;
         this.sender = sender;
         this.uuid = UUID.nameUUIDFromBytes((UUID_PREFIX + sender.getName()).getBytes(StandardCharsets.UTF_8));
+        Block block = sender.getBlock();
+        this.world = new BukkitWorld(block.getWorld());
+        this.chunkX = block.getX() >> 4;
+        this.chunkZ = block.getZ() >> 4;
     }
 
     @Override
@@ -65,63 +71,46 @@ public class BukkitBlockCommandSender extends AbstractCommandBlockActor {
     @Override
     @Deprecated
     public void printRaw(String msg) {
-        //FAWE start - ensure executed on main thread
-        TaskManager.taskManager().sync(() -> {
+        runAtOwner(() -> {
             for (String part : msg.split("\n")) {
                 sender.sendMessage(part);
             }
-            return null;
         });
-        //FAWE end
     }
 
     @Override
     @Deprecated
     public void print(String msg) {
-        //FAWE start - ensure executed on main thread
-        TaskManager.taskManager().sync(() -> {
+        runAtOwner(() -> {
             for (String part : msg.split("\n")) {
                 print(TextComponent.of(part, TextColor.LIGHT_PURPLE));
             }
-            return null;
         });
-        //FAWE end
     }
 
     @Override
     @Deprecated
     public void printDebug(String msg) {
-        //FAWE start - ensure executed on main thread
-        TaskManager.taskManager().sync(() -> {
+        runAtOwner(() -> {
             for (String part : msg.split("\n")) {
                 print(TextComponent.of(part, TextColor.GRAY));
             }
-            return null;
         });
-        //FAWE end
     }
 
     @Override
     @Deprecated
     public void printError(String msg) {
-        //FAWE start - ensure executed on main thread
-        TaskManager.taskManager().sync(() -> {
+        runAtOwner(() -> {
             for (String part : msg.split("\n")) {
                 print(TextComponent.of(part, TextColor.RED));
             }
-            return null;
         });
-        //FAWE end
     }
 
     @Override
     public void print(Component component) {
-        //FAWE start - ensure executed on main thread
-        TaskManager.taskManager().sync(() -> {
-            TextAdapter.sendMessage(sender, WorldEditText.format(component, getLocale()));
-            return null;
-        });
-        //FAWE end
+        runAtOwner(() -> TextAdapter.sendMessage(sender, WorldEditText.format(component, getLocale())));
     }
 
     @Override
@@ -148,7 +137,7 @@ public class BukkitBlockCommandSender extends AbstractCommandBlockActor {
 
     @Override
     public boolean hasPermission(String permission) {
-        return sender.hasPermission(permission);
+        return TaskManager.taskManager().syncAt(() -> sender.hasPermission(permission), world, chunkX, chunkZ);
     }
 
     //FAWE start
@@ -191,19 +180,7 @@ public class BukkitBlockCommandSender extends AbstractCommandBlockActor {
 
             @Override
             public boolean isActive() {
-                if (Bukkit.isPrimaryThread()) {
-                    // we can update eagerly
-                    updateActive();
-                } else {
-                    // we should update it eventually
-                    Bukkit.getScheduler().callSyncMethod(
-                            plugin,
-                            () -> {
-                                updateActive();
-                                return null;
-                            }
-                    );
-                }
+                runAtOwner(this::updateActive);
                 return active;
             }
 
@@ -217,6 +194,10 @@ public class BukkitBlockCommandSender extends AbstractCommandBlockActor {
                 return uuid;
             }
         };
+    }
+
+    private void runAtOwner(Runnable action) {
+        TaskManager.taskManager().taskAt(action, world, chunkX, chunkZ);
     }
 
 }

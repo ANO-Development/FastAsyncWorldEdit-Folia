@@ -2,7 +2,8 @@ name: FastAsyncWorldEdit
 main: com.sk89q.worldedit.bukkit.WorldEditPlugin
 version: "${internalVersion}"
 load: STARTUP
-api-version: 1.21
+api-version: '26.2'
+folia-supported: true
 softdepend: [ Vault ]
 provides: [ WorldEdit ]
 website: https://modrinth.com/plugin/fastasyncworldedit/

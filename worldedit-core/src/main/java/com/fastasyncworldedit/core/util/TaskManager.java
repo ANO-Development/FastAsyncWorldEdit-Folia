@@ -4,7 +4,11 @@ import com.fastasyncworldedit.core.Fawe;
 import com.fastasyncworldedit.core.configuration.Settings;
 import com.fastasyncworldedit.core.queue.implementation.QueueHandler;
 import com.fastasyncworldedit.core.util.task.RunnableVal;
+import com.sk89q.worldedit.entity.Entity;
+import com.sk89q.worldedit.entity.Player;
 import com.sk89q.worldedit.internal.util.LogManagerCompat;
+import com.sk89q.worldedit.util.Location;
+import com.sk89q.worldedit.world.World;
 import org.apache.logging.log4j.Logger;
 
 import javax.annotation.Nonnull;
@@ -52,7 +56,28 @@ public abstract class TaskManager {
      * @param runnable the task to run
      * @param interval in ticks
      */
-    public abstract int repeat(@Nonnull final Runnable runnable, final int interval);
+    public int repeat(@Nonnull final Runnable runnable, final int interval) {
+        return repeat(runnable, interval, interval);
+    }
+
+    /**
+     * Run a repeating task on the global region.
+     *
+     * @param runnable the task to run
+     * @param delay the initial delay in ticks
+     * @param interval the repeat interval in ticks
+     * @return the task id number
+     */
+    public abstract int repeat(@Nonnull Runnable runnable, int delay, int interval);
+
+    public abstract int repeatAt(
+            @Nonnull Runnable runnable,
+            @Nonnull World world,
+            int chunkX,
+            int chunkZ,
+            int delay,
+            int interval
+    );
 
     /**
      * Run a repeating task asynchronously.
@@ -76,6 +101,14 @@ public abstract class TaskManager {
      * @param runnable the task to run
      */
     public abstract void task(@Nonnull final Runnable runnable);
+
+    public void taskAt(@Nonnull final Runnable runnable, @Nonnull final Location location) {
+        taskAt(runnable, (World) location.getExtent(), location.getBlockX() >> 4, location.getBlockZ() >> 4);
+    }
+
+    public abstract void taskAt(@Nonnull Runnable runnable, @Nonnull World world, int chunkX, int chunkZ);
+
+    public abstract void taskWith(@Nonnull Runnable runnable, @Nonnull Entity entity);
 
     /**
      * Get the public ForkJoinPool.
@@ -321,15 +354,7 @@ public abstract class TaskManager {
      * - Usually wait time is around 25ms<br>
      */
     public <T> T syncWhenFree(@Nonnull final RunnableVal<T> function) {
-        if (Fawe.isMainThread()) {
-            function.run();
-            return function.value;
-        }
-        try {
-            return Fawe.instance().getQueueHandler().sync((Supplier<T>) function).get();
-        } catch (InterruptedException | ExecutionException e) {
-            throw new RuntimeException(e);
-        }
+        return syncGlobal(function);
     }
 
     /**
@@ -338,14 +363,7 @@ public abstract class TaskManager {
      * - Usually wait time is around 25ms<br>
      */
     public <T> T syncWhenFree(@Nonnull final Supplier<T> supplier) {
-        if (Fawe.isMainThread()) {
-            return supplier.get();
-        }
-        try {
-            return Fawe.instance().getQueueHandler().sync(supplier).get();
-        } catch (InterruptedException | ExecutionException e) {
-            throw new RuntimeException(e);
-        }
+        return syncGlobal(supplier);
     }
 
     /**
@@ -363,6 +381,10 @@ public abstract class TaskManager {
      * - Usually wait time is around 25ms<br>
      */
     public <T> T sync(final Supplier<T> function) {
+        return syncGlobal(function);
+    }
+
+    public <T> T syncGlobal(@Nonnull final Supplier<T> function) {
         if (Fawe.isMainThread()) {
             return function.get();
         }
@@ -371,6 +393,18 @@ public abstract class TaskManager {
         } catch (InterruptedException | ExecutionException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    public <T> T syncAt(@Nonnull Supplier<T> function, @Nonnull Location location) {
+        return syncAt(function, (World) location.getExtent(), location.getBlockX() >> 4, location.getBlockZ() >> 4);
+    }
+
+    public abstract <T> T syncAt(@Nonnull Supplier<T> function, @Nonnull World world, int chunkX, int chunkZ);
+
+    public abstract <T> T syncWith(@Nonnull Supplier<T> function, @Nonnull Entity entity);
+
+    public <T> T syncWith(@Nonnull Supplier<T> function, @Nonnull Player player) {
+        return syncWith(function, (Entity) player);
     }
 
 }

@@ -2,7 +2,6 @@ package com.sk89q.worldedit.bukkit.adapter.impl.fawe.v26_2;
 
 import com.fastasyncworldedit.bukkit.adapter.AbstractBukkitGetBlocks;
 import com.fastasyncworldedit.bukkit.adapter.DelegateSemaphore;
-import com.fastasyncworldedit.bukkit.adapter.NativeEntityFunctionSet;
 import com.fastasyncworldedit.core.FaweCache;
 import com.fastasyncworldedit.core.configuration.Settings;
 import com.fastasyncworldedit.core.extent.processor.heightmap.HeightMapType;
@@ -13,7 +12,7 @@ import com.fastasyncworldedit.core.nbt.FaweCompoundTag;
 import com.fastasyncworldedit.core.queue.IChunkSet;
 import com.fastasyncworldedit.core.util.MathMan;
 import com.fastasyncworldedit.core.util.NbtUtils;
-import com.fastasyncworldedit.core.util.collection.AdaptedMap;
+import com.fastasyncworldedit.core.util.TaskManager;
 import com.sk89q.worldedit.bukkit.BukkitAdapter;
 import com.sk89q.worldedit.bukkit.BukkitEntity;
 import com.sk89q.worldedit.bukkit.WorldEditPlugin;
@@ -57,6 +56,7 @@ import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.lighting.LevelLightEngine;
 import net.minecraft.world.level.storage.ValueInput;
 import org.apache.logging.log4j.Logger;
+import org.bukkit.Bukkit;
 import org.bukkit.World;
 import org.bukkit.craftbukkit.CraftWorld;
 import org.bukkit.craftbukkit.block.CraftBlock;
@@ -87,6 +87,7 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 import static com.sk89q.worldedit.bukkit.adapter.impl.fawe.v26_2.PaperweightPlatformAdapter.createInput;
 import static com.sk89q.worldedit.bukkit.adapter.impl.fawe.v26_2.PaperweightPlatformAdapter.createOutput;
@@ -197,23 +198,28 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
 
     @Override
     public FaweCompoundTag tile(final int x, final int y, final int z) {
-        BlockEntity blockEntity = getChunk().getBlockEntity(new BlockPos((x & 15) + (
-                chunkX << 4), y, (z & 15) + (
-                chunkZ << 4)));
-        if (blockEntity == null) {
-            return null;
-        }
-        return NMS_TO_TILE.apply(blockEntity);
-
+        return callOnOwnerThread(() -> {
+            BlockEntity blockEntity = getChunk().getBlockEntity(new BlockPos(
+                    (x & 15) + (chunkX << 4), y, (z & 15) + (chunkZ << 4)
+            ));
+            return blockEntity == null ? null : NMS_TO_TILE.apply(blockEntity);
+        });
     }
 
     @Override
     public Map<BlockVector3, FaweCompoundTag> tiles() {
-        Map<BlockPos, BlockEntity> nmsTiles = getChunk().getBlockEntities();
-        if (nmsTiles.isEmpty()) {
-            return Collections.emptyMap();
-        }
-        return AdaptedMap.immutable(nmsTiles, posNms2We, NMS_TO_TILE);
+        return callOnOwnerThread(() -> {
+            Map<BlockPos, BlockEntity> nmsTiles = getChunk().getBlockEntities();
+            if (nmsTiles.isEmpty()) {
+                return Collections.emptyMap();
+            }
+            Map<BlockVector3, FaweCompoundTag> snapshots = new HashMap<>(nmsTiles.size());
+            nmsTiles.forEach((position, blockEntity) -> snapshots.put(
+                    posNms2We.apply(position),
+                    NMS_TO_TILE.apply(blockEntity)
+            ));
+            return Map.copyOf(snapshots);
+        });
     }
 
     @Override
@@ -270,24 +276,27 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
 
     @Override
     public int[] getHeightMap(HeightMapType type) {
-        long[] longArray = getChunk().heightmaps.get(Heightmap.Types.valueOf(type.name())).getRawData();
-        BitArrayUnstretched bitArray = new BitArrayUnstretched(9, 256, longArray);
-        return bitArray.toRaw(new int[256]);
+        return callOnOwnerThread(() -> {
+            long[] longArray = getChunk().heightmaps.get(Heightmap.Types.valueOf(type.name())).getRawData();
+            BitArrayUnstretched bitArray = new BitArrayUnstretched(9, 256, longArray);
+            return bitArray.toRaw(new int[256]);
+        });
     }
 
     @Override
     public @Nullable FaweCompoundTag entity(final UUID uuid) {
-        List<Entity> entities = PaperweightPlatformAdapter.getEntities(getChunk());
-        Entity entity = null;
-        for (Entity e : entities) {
-            if (e.getUUID().equals(uuid)) {
-                entity = e;
-                break;
+        FaweCompoundTag loadedEntity = callOnOwnerThread(() -> {
+            for (Entity entity : PaperweightPlatformAdapter.getEntities(getChunk())) {
+                if (entity.getUUID().equals(uuid)) {
+                    LinValueOutput output = createOutput();
+                    entity.save(output);
+                    return FaweCompoundTag.of(output::buildResult);
+                }
             }
-        }
-        if (entity != null) {
-            org.bukkit.entity.Entity bukkitEnt = entity.getBukkitEntity();
-            return FaweCompoundTag.of(BukkitAdapter.adapt(bukkitEnt).getState().getNbt());
+            return null;
+        });
+        if (loadedEntity != null) {
+            return loadedEntity;
         }
         for (FaweCompoundTag tag : entities()) {
             if (uuid.equals(NbtUtils.uuid(tag))) {
@@ -299,24 +308,34 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
 
     @Override
     public Collection<FaweCompoundTag> entities() {
-        List<Entity> entities = PaperweightPlatformAdapter.getEntities(getChunk());
-        if (entities.isEmpty()) {
-            return Collections.emptyList();
-        }
-        return new NativeEntityFunctionSet<>(entities, Entity::getUUID, e -> {
-            LinValueOutput output = createOutput();
-            e.save(output);
-            return FaweCompoundTag.of(output::buildResult);
+        return callOnOwnerThread(() -> {
+            List<Entity> entities = PaperweightPlatformAdapter.getEntities(getChunk());
+            if (entities.isEmpty()) {
+                return Collections.emptyList();
+            }
+            List<FaweCompoundTag> snapshots = new ArrayList<>(entities.size());
+            for (Entity entity : entities) {
+                LinValueOutput output = createOutput();
+                entity.save(output);
+                snapshots.add(FaweCompoundTag.of(output::buildResult));
+            }
+            return snapshots;
         });
     }
 
     @Override
     public Set<com.sk89q.worldedit.entity.Entity> getFullEntities() {
-        List<Entity> entities = PaperweightPlatformAdapter.getEntities(getChunk());
-        if (entities.isEmpty()) {
-            return Collections.emptySet();
-        }
-        return new NativeEntityFunctionSet<>(entities, Entity::getUUID, e -> new BukkitEntity(e.getBukkitEntity()));
+        return callOnOwnerThread(() -> {
+            List<Entity> entities = PaperweightPlatformAdapter.getEntities(getChunk());
+            if (entities.isEmpty()) {
+                return Collections.emptySet();
+            }
+            Set<com.sk89q.worldedit.entity.Entity> snapshots = new HashSet<>(entities.size());
+            for (Entity entity : entities) {
+                snapshots.add(new BukkitEntity(entity.getBukkitEntity()));
+            }
+            return snapshots;
+        });
     }
 
     private void removeEntity(Entity entity) {
@@ -326,6 +345,21 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
     @Override
     public CompletableFuture<LevelChunk> ensureLoaded(ServerLevel nmsWorld) {
         return PaperweightPlatformAdapter.ensureLoaded(nmsWorld, chunkX, chunkZ);
+    }
+
+    @Override
+    protected <T> T callOnOwnerThread(Supplier<T> function) {
+        return TaskManager.taskManager().syncAt(
+                function,
+                BukkitAdapter.adapt(serverLevel.getWorld()),
+                chunkX,
+                chunkZ
+        );
+    }
+
+    @Override
+    protected boolean isOwnerThread() {
+        return Bukkit.isOwnedByCurrentRegion(serverLevel.getWorld(), chunkX, chunkZ);
     }
 
     @Override

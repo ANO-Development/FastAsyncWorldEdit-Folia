@@ -3,7 +3,6 @@ package com.sk89q.worldedit.bukkit.adapter.impl.fawe.v26_2;
 import com.fastasyncworldedit.core.Fawe;
 import com.fastasyncworldedit.core.math.IntPair;
 import com.fastasyncworldedit.core.util.TaskManager;
-import com.fastasyncworldedit.core.util.task.RunnableVal;
 import com.sk89q.worldedit.bukkit.BukkitAdapter;
 import com.sk89q.worldedit.internal.block.BlockStateIdAccess;
 import com.sk89q.worldedit.internal.wna.WorldNativeAccess;
@@ -12,7 +11,6 @@ import com.sk89q.worldedit.util.SideEffectSet;
 import com.sk89q.worldedit.world.block.BlockState;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
-import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.FullChunkStatus;
 import net.minecraft.server.level.ServerChunkCache;
 import net.minecraft.world.level.Level;
@@ -29,7 +27,10 @@ import org.enginehub.linbus.tree.LinCompoundTag;
 import javax.annotation.Nullable;
 import java.lang.ref.WeakReference;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -61,7 +62,7 @@ public class PaperweightFaweWorldNativeAccess implements WorldNativeAccess<Level
         this.level = level;
         // Use the actual tick as minecraft-defined so we don't try to force blocks into the world when the server's already lagging.
         //  - With the caveat that we don't want to have too many cached changed (1024) so we'd flush those at 1024 anyway.
-        this.lastTick = new AtomicInteger(MinecraftServer.currentTick);
+        this.lastTick = new AtomicInteger(currentTick());
     }
 
     private Level getLevel() {
@@ -97,16 +98,16 @@ public class PaperweightFaweWorldNativeAccess implements WorldNativeAccess<Level
             LevelChunk levelChunk, BlockPos blockPos,
             net.minecraft.world.level.block.state.BlockState blockState
     ) {
-        int currentTick = MinecraftServer.currentTick;
-        if (Fawe.isMainThread()) {
+        int currentTick = currentTick();
+        CraftWorld craftWorld = getLevel().getWorld();
+        if (craftWorld != null && org.bukkit.Bukkit.isOwnedByCurrentRegion(craftWorld, levelChunk.locX, levelChunk.locZ)) {
             return levelChunk.setBlockState(blockPos, blockState,
                     this.sideEffectSet.shouldApply(SideEffect.UPDATE) ? 0 : 512
             );
         }
-        // Since FAWE is.. Async we need to do it on the main thread (wooooo.. :( )
         cachedChanges.add(new CachedChange(levelChunk, blockPos, blockState));
         cachedChunksToSend.add(new IntPair(levelChunk.locX, levelChunk.locZ));
-        boolean nextTick = lastTick.get() > currentTick;
+        boolean nextTick = lastTick.get() != currentTick;
         if (nextTick || cachedChanges.size() >= 1024) {
             if (nextTick) {
                 lastTick.set(currentTick);
@@ -246,43 +247,51 @@ public class PaperweightFaweWorldNativeAccess implements WorldNativeAccess<Level
         } else {
             toSend = Collections.emptySet();
         }
-        RunnableVal<Object> runnableVal = new RunnableVal<>() {
-            @Override
-            public void run(Object value) {
-                changes.forEach(cc -> cc.levelChunk.setBlockState(cc.blockPos, cc.blockState,
-                        sideEffectSet.shouldApply(SideEffect.UPDATE) ? 0 : 512
-                ));
-                if (!sendChunks) {
-                    return;
-                }
-                for (IntPair chunk : toSend) {
-                    PaperweightPlatformAdapter.sendChunk(chunk, getLevel().getWorld().getHandle(), chunk.x(), chunk.z());
-                }
-            }
-        };
-        TaskManager.taskManager().async(() -> TaskManager.taskManager().sync(runnableVal));
+        dispatchChanges(changes, toSend, false);
     }
 
     @Override
     public synchronized void flush() {
-        RunnableVal<Object> runnableVal = new RunnableVal<>() {
-            @Override
-            public void run(Object value) {
-                cachedChanges.forEach(cc -> cc.levelChunk.setBlockState(cc.blockPos, cc.blockState,
-                        sideEffectSet.shouldApply(SideEffect.UPDATE) ? 0 : 512
-                ));
-                for (IntPair chunk : cachedChunksToSend) {
-                    PaperweightPlatformAdapter.sendChunk(chunk, getLevel().getWorld().getHandle(), chunk.x(), chunk.z());
-                }
-            }
-        };
-        if (Fawe.isMainThread()) {
-            runnableVal.run();
-        } else {
-            TaskManager.taskManager().sync(runnableVal);
-        }
+        dispatchChanges(Set.copyOf(cachedChanges), Set.copyOf(cachedChunksToSend), true);
         cachedChanges.clear();
         cachedChunksToSend.clear();
+    }
+
+    private void dispatchChanges(Set<CachedChange> changes, Set<IntPair> chunksToSend, boolean awaitCompletion) {
+        CraftWorld craftWorld = Objects.requireNonNull(getLevel().getWorld(), "The Bukkit world is no longer available");
+        Map<IntPair, List<CachedChange>> changesByChunk = new HashMap<>();
+        for (CachedChange change : changes) {
+            IntPair chunk = new IntPair(change.levelChunk.locX, change.levelChunk.locZ);
+            changesByChunk.computeIfAbsent(chunk, ignored -> new java.util.ArrayList<>()).add(change);
+        }
+        for (IntPair chunk : chunksToSend) {
+            changesByChunk.computeIfAbsent(chunk, ignored -> Collections.emptyList());
+        }
+
+        com.sk89q.worldedit.world.World world = BukkitAdapter.adapt(craftWorld);
+        for (Map.Entry<IntPair, List<CachedChange>> entry : changesByChunk.entrySet()) {
+            IntPair chunk = entry.getKey();
+            Runnable apply = () -> {
+                for (CachedChange change : entry.getValue()) {
+                    change.levelChunk.setBlockState(
+                            change.blockPos,
+                            change.blockState,
+                            sideEffectSet.shouldApply(SideEffect.UPDATE) ? 0 : 512
+                    );
+                }
+                if (chunksToSend.contains(chunk)) {
+                    PaperweightPlatformAdapter.sendChunk(chunk, craftWorld.getHandle(), chunk.x(), chunk.z());
+                }
+            };
+            if (awaitCompletion) {
+                TaskManager.taskManager().syncAt(() -> {
+                    apply.run();
+                    return null;
+                }, world, chunk.x(), chunk.z());
+            } else {
+                TaskManager.taskManager().taskAt(apply, world, chunk.x(), chunk.z());
+            }
+        }
     }
 
     private record CachedChange(
@@ -291,6 +300,10 @@ public class PaperweightFaweWorldNativeAccess implements WorldNativeAccess<Level
             net.minecraft.world.level.block.state.BlockState blockState
     ) {
 
+    }
+
+    private static int currentTick() {
+        return (int) Fawe.instance().getTimer().getTick();
     }
 
 }

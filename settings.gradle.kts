@@ -15,6 +15,10 @@ plugins {
 dependencyResolutionManagement {
     repositories {
         maven {
+            name = "PaperMC"
+            url = uri("https://repo.papermc.io/repository/maven-public/")
+        }
+        maven {
             name = "EngineHub Repository"
             url = uri("https://maven.enginehub.org/repo/")
             content {
@@ -55,7 +59,14 @@ includeBuild("build-logic")
 
 include("worldedit-libs")
 
-listOf("1_21", "1_21_4", "1_21_5", "1_21_6", "1_21_9", "1_21_11", "26.1", "26.2").forEach {
+val supportedAdapterVersions = listOf("1_21", "1_21_4", "1_21_5", "1_21_6", "1_21_9", "1_21_11", "26.1", "26.2")
+val adapterVersions = if (providers.gradleProperty("fawe.foliaTarget").orNull.toBoolean()) {
+    listOf("26.2")
+} else {
+    supportedAdapterVersions
+}
+
+adapterVersions.forEach {
     include("worldedit-bukkit:adapters:adapter-$it")
 }
 

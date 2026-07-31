@@ -20,7 +20,6 @@
 package com.sk89q.worldedit.bukkit;
 
 import com.fastasyncworldedit.bukkit.util.WorldUnloadedException;
-import com.fastasyncworldedit.core.Fawe;
 import com.fastasyncworldedit.core.FaweCache;
 import com.fastasyncworldedit.core.configuration.Settings;
 import com.fastasyncworldedit.core.internal.exception.FaweException;
@@ -62,6 +61,7 @@ import com.sk89q.worldedit.world.weather.WeatherTypes;
 import io.papermc.lib.PaperLib;
 import org.apache.logging.log4j.Logger;
 import org.bukkit.Bukkit;
+import org.bukkit.Chunk;
 import org.bukkit.Effect;
 import org.bukkit.TreeType;
 import org.bukkit.World;
@@ -82,6 +82,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import static com.google.common.base.Preconditions.checkNotNull;
@@ -148,12 +149,22 @@ public class BukkitWorld extends AbstractWorld {
     @Override
     public List<com.sk89q.worldedit.entity.Entity> getEntities(Region region) {
         World world = getWorld();
-
-        List<Entity> ents = TaskManager.taskManager().sync(world::getEntities);
+        BukkitImplAdapter adapter = WorldEditPlugin.getInstance().getBukkitImplAdapter();
         List<com.sk89q.worldedit.entity.Entity> entities = new ArrayList<>();
-        for (Entity ent : ents) {
-            if (region.contains(BukkitAdapter.asBlockVector(ent.getLocation()))) {
-                entities.add(BukkitAdapter.adapt(ent));
+        int minChunkX = region.getMinimumPoint().x() >> 4;
+        int maxChunkX = region.getMaximumPoint().x() >> 4;
+        int minChunkZ = region.getMinimumPoint().z() >> 4;
+        int maxChunkZ = region.getMaximumPoint().z() >> 4;
+        for (Chunk chunk : world.getLoadedChunks()) {
+            if (chunk.getX() < minChunkX || chunk.getX() > maxChunkX
+                    || chunk.getZ() < minChunkZ || chunk.getZ() > maxChunkZ) {
+                continue;
+            }
+            for (Entity entity : adapter.getEntities(world, chunk.getX(), chunk.getZ())) {
+                com.sk89q.worldedit.entity.Entity wrappedEntity = BukkitAdapter.adapt(entity);
+                if (region.contains(wrappedEntity.getLocation().toBlockPoint())) {
+                    entities.add(wrappedEntity);
+                }
             }
         }
         return entities;
@@ -162,8 +173,8 @@ public class BukkitWorld extends AbstractWorld {
     @Override
     public List<com.sk89q.worldedit.entity.Entity> getEntities() {
         List<com.sk89q.worldedit.entity.Entity> list = new ArrayList<>();
-
-        List<Entity> ents = TaskManager.taskManager().sync(getWorld()::getEntities);
+        BukkitImplAdapter adapter = WorldEditPlugin.getInstance().getBukkitImplAdapter();
+        List<Entity> ents = adapter.getEntities(getWorld());
         for (Entity entity : ents) {
             list.add(BukkitAdapter.adapt(entity));
         }
@@ -173,9 +184,7 @@ public class BukkitWorld extends AbstractWorld {
     @Override
     public int removeEntities(final Region region) {
         List<com.sk89q.worldedit.entity.Entity> entities = getEntities(region);
-        return TaskManager.taskManager().sync(() -> entities.stream()
-                .mapToInt(entity -> entity.remove() ? 1 : 0).sum()
-        );
+        return entities.stream().mapToInt(entity -> entity.remove() ? 1 : 0).sum();
     }
 
     //FAWE: createEntity was moved to IChunkExtent to prevent issues with Async Entity Add.
@@ -254,7 +263,7 @@ public class BukkitWorld extends AbstractWorld {
         //FAWE start - safe edit region
         testCoords(pt);
         //FAWE end
-        return getWorld().getBlockAt(pt.x(), pt.y(), pt.z()).getLightLevel();
+        return at(pt, () -> getWorld().getBlockAt(pt.x(), pt.y(), pt.z()).getLightLevel());
     }
 
     @Override
@@ -280,33 +289,29 @@ public class BukkitWorld extends AbstractWorld {
         //FAWE start - safe edit region
         testCoords(pt);
         //FAWE end
-        BukkitImplAdapter adapter = WorldEditPlugin.getInstance().getBukkitImplAdapter();
-        if (adapter != null) {
-            try {
-                return adapter.clearContainerBlockContents(getWorld(), pt);
-            } catch (Exception ignored) {
+        return at(pt, () -> {
+            BukkitImplAdapter adapter = WorldEditPlugin.getInstance().getBukkitImplAdapter();
+            if (adapter != null) {
+                try {
+                    return adapter.clearContainerBlockContents(getWorld(), pt);
+                } catch (Exception ignored) {
+                }
             }
-        }
-        if (!getBlock(pt).getBlockType().getMaterial().hasContainer()) {
-            return false;
-        }
-
-        Block block = getWorld().getBlockAt(pt.x(), pt.y(), pt.z());
-        BlockState state = PaperLib.getBlockState(block, false).getState();
-        if (!(state instanceof InventoryHolder)) {
-            return false;
-        }
-
-        TaskManager.taskManager().sync(() -> {
-            InventoryHolder chest = (InventoryHolder) state;
+            if (!getBlock(pt).getBlockType().getMaterial().hasContainer()) {
+                return false;
+            }
+            Block block = getWorld().getBlockAt(pt.x(), pt.y(), pt.z());
+            BlockState state = PaperLib.getBlockState(block, false).getState();
+            if (!(state instanceof InventoryHolder chest)) {
+                return false;
+            }
             Inventory inven = chest.getInventory();
             if (chest instanceof Chest) {
                 inven = ((Chest) chest).getBlockInventory();
             }
             inven.clear();
-            return null;
+            return true;
         });
-        return true;
     }
 
     /**
@@ -383,7 +388,11 @@ public class BukkitWorld extends AbstractWorld {
     @Override
     public void dropItem(Vector3 pt, BaseItemStack item) {
         World world = getWorld();
-        world.dropItemNaturally(BukkitAdapter.adapt(world, pt), BukkitAdapter.adapt(item));
+        BlockVector3 blockPosition = pt.toBlockPoint();
+        at(blockPosition, () -> {
+            world.dropItemNaturally(BukkitAdapter.adapt(world, pt), BukkitAdapter.adapt(item));
+            return null;
+        });
     }
 
     @Override
@@ -395,11 +404,7 @@ public class BukkitWorld extends AbstractWorld {
         //FAWE start
         int X = pt.x() >> 4;
         int Z = pt.z() >> 4;
-        if (Fawe.isMainThread()) {
-            world.getChunkAt(X, Z);
-        } else if (PaperLib.isPaper()) {
-            PaperLib.getChunkAtAsync(world, X, Z, true);
-        }
+        world.getChunkAtAsync(X, Z, true);
         //FAWE end
     }
 
@@ -443,7 +448,12 @@ public class BukkitWorld extends AbstractWorld {
     public void fixAfterFastMode(Iterable<BlockVector2> chunks) {
         World world = getWorld();
         for (BlockVector2 chunkPos : chunks) {
-            world.refreshChunk(chunkPos.x(), chunkPos.z());
+            TaskManager.taskManager().taskAt(
+                    () -> world.refreshChunk(chunkPos.x(), chunkPos.z()),
+                    this,
+                    chunkPos.x(),
+                    chunkPos.z()
+            );
         }
     }
 
@@ -456,7 +466,7 @@ public class BukkitWorld extends AbstractWorld {
             return false;
         }
 
-        world.playEffect(BukkitAdapter.adapt(world, position), effect, data);
+        atTask(position.toBlockPoint(), () -> world.playEffect(BukkitAdapter.adapt(world, position), effect, data));
 
         return true;
     }
@@ -465,13 +475,21 @@ public class BukkitWorld extends AbstractWorld {
     @Override
     public boolean playBlockBreakEffect(Vector3 position, BlockType type) {
         World world = getWorld();
-        world.playEffect(BukkitAdapter.adapt(world, position), Effect.STEP_SOUND, BukkitAdapter.adapt(type));
+        atTask(position.toBlockPoint(), () -> world.playEffect(
+                BukkitAdapter.adapt(world, position),
+                Effect.STEP_SOUND,
+                BukkitAdapter.adapt(type)
+        ));
         return true;
     }
     //FAWE end
 
     @Override
     public WeatherType getWeather() {
+        return TaskManager.taskManager().syncGlobal(() -> getWeatherOnGlobalThread());
+    }
+
+    private WeatherType getWeatherOnGlobalThread() {
         if (getWorld().isThundering()) {
             return WeatherTypes.THUNDER_STORM;
         } else if (getWorld().hasStorm()) {
@@ -483,41 +501,43 @@ public class BukkitWorld extends AbstractWorld {
 
     @Override
     public long getRemainingWeatherDuration() {
-        return getWorld().getWeatherDuration();
+        return TaskManager.taskManager().syncGlobal(() -> getWorld().getWeatherDuration());
     }
 
     @Override
     public void setWeather(WeatherType weatherType) {
-        if (weatherType == WeatherTypes.THUNDER_STORM) {
-            getWorld().setThundering(true);
-        } else if (weatherType == WeatherTypes.RAIN) {
-            getWorld().setStorm(true);
-        } else {
-            getWorld().setStorm(false);
-            getWorld().setThundering(false);
-        }
+        TaskManager.taskManager().task(() -> setWeatherOnGlobalThread(weatherType, null));
     }
 
     @Override
     public void setWeather(WeatherType weatherType, long duration) {
-        // Who named these methods...
+        TaskManager.taskManager().task(() -> setWeatherOnGlobalThread(weatherType, Math.toIntExact(duration)));
+    }
+
+    private void setWeatherOnGlobalThread(WeatherType weatherType, Integer duration) {
         if (weatherType == WeatherTypes.THUNDER_STORM) {
             getWorld().setThundering(true);
-            getWorld().setThunderDuration((int) duration);
-            getWorld().setWeatherDuration((int) duration);
+            if (duration != null) {
+                getWorld().setThunderDuration(duration);
+                getWorld().setWeatherDuration(duration);
+            }
         } else if (weatherType == WeatherTypes.RAIN) {
             getWorld().setStorm(true);
-            getWorld().setWeatherDuration((int) duration);
+            if (duration != null) {
+                getWorld().setWeatherDuration(duration);
+            }
         } else {
             getWorld().setStorm(false);
             getWorld().setThundering(false);
-            getWorld().setWeatherDuration((int) duration);
+            if (duration != null) {
+                getWorld().setWeatherDuration(duration);
+            }
         }
     }
 
     @Override
     public BlockVector3 getSpawnPosition() {
-        return BukkitAdapter.asBlockVector(getWorld().getSpawnLocation());
+        return TaskManager.taskManager().syncGlobal(() -> BukkitAdapter.asBlockVector(getWorld().getSpawnLocation()));
     }
 
     @Override
@@ -525,14 +545,14 @@ public class BukkitWorld extends AbstractWorld {
         //FAWE start - safe edit region
         testCoords(pt);
         //FAWE end
-        getWorld().getBlockAt(pt.x(), pt.y(), pt.z()).breakNaturally();
+        at(pt, () -> getWorld().getBlockAt(pt.x(), pt.y(), pt.z()).breakNaturally());
     }
 
     //FAWE start
     @Override
     public Collection<BaseItemStack> getBlockDrops(BlockVector3 position) {
-        return getWorld().getBlockAt(position.x(), position.y(), position.z()).getDrops().stream()
-                .map(BukkitAdapter::adapt).collect(Collectors.toList());
+        return at(position, () -> getWorld().getBlockAt(position.x(), position.y(), position.z()).getDrops().stream()
+                .map(BukkitAdapter::adapt).collect(Collectors.toList()));
     }
     //FAWE end
 
@@ -543,7 +563,7 @@ public class BukkitWorld extends AbstractWorld {
         //FAWE end
         BukkitImplAdapter adapter = WorldEditPlugin.getInstance().getBukkitImplAdapter();
         if (adapter != null) {
-            return adapter.canPlaceAt(getWorld(), position, blockState);
+            return at(position, () -> adapter.canPlaceAt(getWorld(), position, blockState));
         }
         // We can't check, so assume yes.
         return true;
@@ -579,7 +599,7 @@ public class BukkitWorld extends AbstractWorld {
         BukkitImplAdapter adapter = WorldEditPlugin.getInstance().getBukkitImplAdapter();
         if (adapter != null) {
             try {
-                return adapter.getBlock(BukkitAdapter.adapt(getWorld(), position)).toImmutableState();
+                return at(position, () -> adapter.getBlock(BukkitAdapter.adapt(getWorld(), position)).toImmutableState());
             } catch (Exception e) {
                 if (!hasWarnedImplError) {
                     hasWarnedImplError = true;
@@ -588,8 +608,9 @@ public class BukkitWorld extends AbstractWorld {
             }
         }
         if (WorldEditPlugin.getInstance().getLocalConfiguration().unsupportedVersionEditing) {
-            Block bukkitBlock = getWorld().getBlockAt(position.x(), position.y(), position.z());
-            return BukkitAdapter.adapt(bukkitBlock.getBlockData());
+            return at(position, () -> BukkitAdapter.adapt(
+                    getWorld().getBlockAt(position.x(), position.y(), position.z()).getBlockData()
+            ));
         } else {
             throw new RuntimeException(new UnsupportedVersionEditException());
         }
@@ -600,21 +621,22 @@ public class BukkitWorld extends AbstractWorld {
         //FAWE start - safe edit region
         testCoords(position);
         //FAWE end
-        if (worldNativeAccess != null) {
-            try {
-                return worldNativeAccess.setBlock(position, block, sideEffects);
-            } catch (Exception e) {
-                if (block instanceof BaseBlock && ((BaseBlock) block).getNbt() != null) {
-                    LOGGER.warn("Tried to set a corrupt tile entity at " + position.toString()
-                            + ": " + ((BaseBlock) block).getNbt(), e);
-                } else {
-                    LOGGER.warn("Failed to set block via adapter, falling back to generic", e);
+        return at(position, () -> {
+            if (worldNativeAccess != null) {
+                try {
+                    return worldNativeAccess.setBlock(position, block, sideEffects);
+                } catch (Exception e) {
+                    if (block instanceof BaseBlock && ((BaseBlock) block).getNbt() != null) {
+                        LOGGER.warn("Tried to set a corrupt tile entity at " + position + ": " + ((BaseBlock) block).getNbt(), e);
+                    } else {
+                        LOGGER.warn("Failed to set block via adapter, falling back to generic", e);
+                    }
                 }
             }
-        }
-        Block bukkitBlock = getWorld().getBlockAt(position.x(), position.y(), position.z());
-        bukkitBlock.setBlockData(BukkitAdapter.adapt(block), sideEffects.doesApplyAny());
-        return true;
+            Block bukkitBlock = getWorld().getBlockAt(position.x(), position.y(), position.z());
+            bukkitBlock.setBlockData(BukkitAdapter.adapt(block), sideEffects.doesApplyAny());
+            return true;
+        });
     }
 
     @Override
@@ -624,7 +646,7 @@ public class BukkitWorld extends AbstractWorld {
         //FAWE end
         BukkitImplAdapter adapter = WorldEditPlugin.getInstance().getBukkitImplAdapter();
         if (adapter != null) {
-            return adapter.getFullBlock(BukkitAdapter.adapt(getWorld(), position));
+            return at(position, () -> adapter.getFullBlock(BukkitAdapter.adapt(getWorld(), position)));
         } else {
             return getBlock(position).toBaseBlock();
         }
@@ -650,7 +672,10 @@ public class BukkitWorld extends AbstractWorld {
         testCoords(position);
         //FAWE end
         if (worldNativeAccess != null) {
-            worldNativeAccess.applySideEffects(position, previousType, sideEffectSet);
+            at(position, () -> {
+                worldNativeAccess.applySideEffects(position, previousType, sideEffectSet);
+                return null;
+            });
             return Sets.intersection(
                     WorldEditPlugin.getInstance().getInternalPlatform().getSupportedSideEffects(),
                     sideEffectSet.getSideEffectsToApply()
@@ -667,7 +692,7 @@ public class BukkitWorld extends AbstractWorld {
         //FAWE end
         BukkitImplAdapter adapter = WorldEditPlugin.getInstance().getBukkitImplAdapter();
         if (adapter != null) {
-            return adapter.simulateItemUse(getWorld(), position, item, face);
+            return at(position, () -> adapter.simulateItemUse(getWorld(), position, item, face));
         }
 
         return false;
@@ -685,11 +710,9 @@ public class BukkitWorld extends AbstractWorld {
         //FAWE start - safe edit region
         testCoords(position);
         //FAWE end
-        if (HAS_3D_BIOMES) {
-            return BukkitAdapter.adapt(getWorld().getBiome(position.x(), position.y(), position.z()));
-        } else {
-            return BukkitAdapter.adapt(getWorld().getBiome(position.x(), position.z()));
-        }
+        return at(position, () -> HAS_3D_BIOMES
+                ? BukkitAdapter.adapt(getWorld().getBiome(position.x(), position.y(), position.z()))
+                : BukkitAdapter.adapt(getWorld().getBiome(position.x(), position.z())));
     }
 
     @SuppressWarnings("deprecation")
@@ -698,12 +721,14 @@ public class BukkitWorld extends AbstractWorld {
         //FAWE start - safe edit region
         testCoords(position);
         //FAWE end
-        if (HAS_3D_BIOMES) {
-            getWorld().setBiome(position.x(), position.y(), position.z(), BukkitAdapter.adapt(biome));
-        } else {
-            getWorld().setBiome(position.x(), position.z(), BukkitAdapter.adapt(biome));
-        }
-        return true;
+        return at(position, () -> {
+            if (HAS_3D_BIOMES) {
+                getWorld().setBiome(position.x(), position.y(), position.z(), BukkitAdapter.adapt(biome));
+            } else {
+                getWorld().setBiome(position.x(), position.z(), BukkitAdapter.adapt(biome));
+            }
+            return true;
+        });
     }
 
     //FAWE start
@@ -727,7 +752,7 @@ public class BukkitWorld extends AbstractWorld {
     @Override
     public void refreshChunk(int chunkX, int chunkZ) {
         testCoords(BlockVector3.at(chunkX << 4, 0, chunkZ << 4));
-        getWorld().refreshChunk(chunkX, chunkZ);
+        TaskManager.taskManager().taskAt(() -> getWorld().refreshChunk(chunkX, chunkZ), this, chunkX, chunkZ);
     }
 
     @Override
@@ -747,6 +772,14 @@ public class BukkitWorld extends AbstractWorld {
         if (worldNativeAccess != null) {
             worldNativeAccess.flush();
         }
+    }
+
+    private <T> T at(BlockVector3 position, Supplier<T> action) {
+        return TaskManager.taskManager().syncAt(action, this, position.x() >> 4, position.z() >> 4);
+    }
+
+    private void atTask(BlockVector3 position, Runnable action) {
+        TaskManager.taskManager().taskAt(action, this, position.x() >> 4, position.z() >> 4);
     }
     //FAWE end
 }
