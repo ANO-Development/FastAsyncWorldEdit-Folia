@@ -297,8 +297,12 @@ public class BukkitPlayer extends AbstractPlayerActor {
 
     @Override
     public boolean hasPermission(String perm) {
-        return withPlayer(() -> (!plugin.getLocalConfiguration().noOpPermissions && player.isOp())
-                || plugin.getPermissionsResolver().hasPermission(player.getWorld().getName(), player, perm));
+        return BukkitPlayerPermissionEvaluator.hasPermission(
+                player,
+                perm,
+                plugin.getPermissionsResolver(),
+                plugin.getLocalConfiguration().noOpPermissions
+        );
     }
 
     //FAWE start
