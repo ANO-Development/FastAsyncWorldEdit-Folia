@@ -2,6 +2,7 @@ package com.sk89q.worldedit.bukkit.adapter.impl.fawe.v26_2;
 
 import com.fastasyncworldedit.bukkit.adapter.FaweAdapter;
 import com.fastasyncworldedit.bukkit.adapter.NMSRelighterFactory;
+import com.fastasyncworldedit.bukkit.util.PaperSupport;
 import com.fastasyncworldedit.core.FaweCache;
 import com.fastasyncworldedit.core.extent.processor.PlacementStateProcessor;
 import com.fastasyncworldedit.core.extent.processor.lighting.RelighterFactory;
@@ -55,7 +56,6 @@ import com.sk89q.worldedit.world.generation.StructureType;
 import com.sk89q.worldedit.world.generation.TreeType;
 import com.sk89q.worldedit.world.item.ItemType;
 import com.sk89q.worldedit.world.registry.BlockMaterial;
-import io.papermc.lib.PaperLib;
 import io.papermc.paper.threadedregions.RegionizedWorldData;
 import io.papermc.paper.threadedregions.TickRegionScheduler;
 import net.minecraft.core.BlockPos;
@@ -864,7 +864,7 @@ public final class PaperweightFaweAdapter extends FaweAdapter<net.minecraft.nbt.
 
     @Override
     public RelighterFactory getRelighterFactory() {
-        if (PaperLib.isPaper()) {
+        if (PaperSupport.isPaper()) {
             return new PaperweightStarlightRelighterFactory();
         } else {
             return new NMSRelighterFactory();
@@ -896,7 +896,7 @@ public final class PaperweightFaweAdapter extends FaweAdapter<net.minecraft.nbt.
     }
 
     private boolean wasAccessibleSinceLastSave(ChunkHolder holder) {
-        if (PaperLib.isPaper()) { // Papers new chunk system has no related replacement - therefor we assume true.
+        if (PaperSupport.isPaper()) { // Papers new chunk system has no related replacement - therefor we assume true.
             return true;
         }
         try {

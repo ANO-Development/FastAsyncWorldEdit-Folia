@@ -58,7 +58,6 @@ import com.sk89q.worldedit.world.generation.ConfiguredFeatureType;
 import com.sk89q.worldedit.world.generation.StructureType;
 import com.sk89q.worldedit.world.weather.WeatherType;
 import com.sk89q.worldedit.world.weather.WeatherTypes;
-import io.papermc.lib.PaperLib;
 import org.apache.logging.log4j.Logger;
 import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
@@ -301,7 +300,7 @@ public class BukkitWorld extends AbstractWorld {
                 return false;
             }
             Block block = getWorld().getBlockAt(pt.x(), pt.y(), pt.z());
-            BlockState state = PaperLib.getBlockState(block, false).getState();
+            BlockState state = block.getState(false);
             if (!(state instanceof InventoryHolder chest)) {
                 return false;
             }
@@ -701,12 +700,6 @@ public class BukkitWorld extends AbstractWorld {
         }
 
         return false;
-    }
-
-    @Override
-    public boolean fullySupports3DBiomes() {
-        // Supports if API does and we're not in the overworld
-        return HAS_3D_BIOMES && getWorld().getEnvironment() != World.Environment.NORMAL || PaperLib.isVersion(18);
     }
 
     @SuppressWarnings("deprecation")
