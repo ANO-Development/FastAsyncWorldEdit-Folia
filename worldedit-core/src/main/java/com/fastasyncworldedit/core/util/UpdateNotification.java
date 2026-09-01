@@ -4,12 +4,10 @@ import com.fastasyncworldedit.core.Fawe;
 import com.fastasyncworldedit.core.FaweVersion;
 import com.fastasyncworldedit.core.configuration.Caption;
 import com.fastasyncworldedit.core.configuration.Settings;
-import com.sk89q.util.StringUtil;
 import com.sk89q.worldedit.extension.platform.Actor;
 import com.sk89q.worldedit.internal.util.LogManagerCompat;
 import com.sk89q.worldedit.util.formatting.text.TextComponent;
 import com.sk89q.worldedit.util.formatting.text.event.ClickEvent;
-import com.sk89q.worldedit.util.formatting.text.format.TextColor;
 import org.apache.logging.log4j.Logger;
 import org.jetbrains.annotations.VisibleForTesting;
 
@@ -18,7 +16,6 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.Arrays;
-import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
@@ -26,68 +23,45 @@ import java.util.regex.Pattern;
 
 public class UpdateNotification {
 
-    private static final String GITHUB_LAST_RELEASE = "https://api.github.com/repos/IntellectualSites/FastAsyncWorldEdit/releases/latest";
-    private static final String JENKINS_LAST_BUILD = "https://ci.athion.net/job/FastAsyncWorldEdit/lastSuccessfulBuild/api/json";
+    private static final String GITHUB_LAST_RELEASE = "https://api.github.com/repos/ANO-Development/FastAsyncWorldEdit-Folia/releases/latest";
 
-    private static final String LINK_DOWNLOAD_JENKINS = "https://ci.athion.net/job/FastAsyncWorldEdit";
-    private static final String LINK_DOWNLOAD_MODRINTH = "https://modrinth.com/plugin/fastasyncworldedit";
-    private static final String LINK_DOWNLOAD_HANGAR = "https://hangar.papermc.io/IntellectualSites/FastAsyncWorldEdit";
+    private static final String LINK_DOWNLOAD_RELEASES = "https://github.com/ANO-Development/FastAsyncWorldEdit-Folia/releases";
 
     private static final String CONSOLE_NOTIFICATION_OUTDATED_RELEASE = """
             A new release for FastAsyncWorldEdit is available: {}. You are currently on {}.
-            Download from {} or {}""";
-    private static final String CONSOLE_NOTIFICATION_OUTDATED_BUILD = """
-                                An update for FastAsyncWorldEdit is available. You are {} build(s) out of date.
-                                You are running build {}, the latest version is build {}.
-                                Update at {}""";
+            Download from {}""";
 
     private static final Logger LOGGER = LogManagerCompat.getLogger();
     private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
-    private static final Pattern GITHUB_RESPONSE_TAG_NAME_PATTERN = Pattern.compile("\"tag_name\":\"([\\d.]+)\"");
-    private static final Pattern JENKINS_RESPONSE_BUILD_PATTERN = Pattern.compile("\"number\":(\\d+)");
+    private static final Pattern GITHUB_RESPONSE_TAG_NAME_PATTERN = Pattern.compile(
+            "\"tag_name\":\"(\\d+\\.\\d+\\.\\d+)(?:-folia\\.(\\d+))?\"");
 
     private static volatile int[] lastRelease;
-    private static volatile int lastBuild = -1;
+    private static volatile String lastReleaseTag;
 
     /**
-     * Check whether a new build with a higher build number than the current build is available.
+     * Check whether a newer release of the Folia fork is published on GitHub.
      */
     public static void doUpdateCheck() {
         if (hasUpdateInfo()) {
             return;
         }
         final FaweVersion installedVersion = Fawe.instance().getVersion();
-        if (installedVersion == null || (installedVersion.build == 0 && installedVersion.snapshot)) {
-            LOGGER.warn("You are using a snapshot or a custom version of FAWE. " +
-                    "This is not an official build distributed via https://ci.athion.net/job/FastAsyncWorldEdit/");
+        if (installedVersion == null || installedVersion.semver == null) {
             return;
         }
-        if (Settings.settings().ENABLED_COMPONENTS.SNAPSHOT_UPDATE_NOTIFICATIONS && installedVersion.build > 0) {
-            checkLatestBuild().orTimeout(10, TimeUnit.SECONDS).whenComplete((build, throwable) -> {
-                if (throwable != null) {
-                    LOGGER.error("Failed to check for latest build", throwable);
-                    return;
-                }
-                lastBuild = build;
-                int difference = lastBuild - installedVersion.build;
-                if (difference < 1) {
-                    return;
-                }
-                LOGGER.warn(CONSOLE_NOTIFICATION_OUTDATED_BUILD, difference, installedVersion.build, lastBuild, LINK_DOWNLOAD_JENKINS);
-            });
-        }
-        if (Settings.settings().ENABLED_COMPONENTS.RELEASE_UPDATE_NOTIFICATIONS && installedVersion.semver != null) {
+        if (Settings.settings().ENABLED_COMPONENTS.RELEASE_UPDATE_NOTIFICATIONS) {
             checkLatestRelease().orTimeout(10, TimeUnit.SECONDS).whenComplete((version, throwable) -> {
                 if (throwable != null) {
                     LOGGER.error("Failed to check for latest release", throwable);
                     return;
                 }
                 lastRelease = version;
-                if (hasUpdateSemver(installedVersion.semver, version)) {
+                if (hasUpdate(installedVersion.semver, installedVersion.build, version)) {
                     LOGGER.warn(CONSOLE_NOTIFICATION_OUTDATED_RELEASE,
-                            StringUtil.joinString(lastRelease, ".", 0),
-                            StringUtil.joinString(installedVersion.semver, ".", 0),
-                            LINK_DOWNLOAD_MODRINTH, LINK_DOWNLOAD_HANGAR
+                            lastReleaseTag,
+                            installedVersion.toString(),
+                            LINK_DOWNLOAD_RELEASES
                     );
                 }
             });
@@ -109,36 +83,10 @@ public class UpdateNotification {
                 throw new UpdateCheckException("Couldn't find tag name in response");
             }
             try {
-                return Arrays.stream(matcher.group(1).split("\\.")).toList().stream().mapToInt(Integer::parseInt).toArray();
+                lastReleaseTag = matcher.group(1) + (matcher.group(2) == null ? "" : "-folia." + matcher.group(2));
+                return parseReleaseTag(matcher.group(1), matcher.group(2));
             } catch (NumberFormatException e) {
-                throw new UpdateCheckException("Couldn't parse version", e);
-            }
-        }).thenApply(version -> {
-            if (version.length != 3) {
-                throw new UpdateCheckException("Retrieved malformed version (%s)".formatted(Arrays.toString(version)));
-            }
-            return version;
-        });
-    }
-
-    private static CompletableFuture<Integer> checkLatestBuild() {
-        return HTTP_CLIENT.sendAsync(
-                HttpRequest.newBuilder().GET().uri(URI.create(JENKINS_LAST_BUILD)).build(),
-                HttpResponse.BodyHandlers.ofString()
-        ).thenApply(response -> {
-            if (response.statusCode() != 200) {
-                throw new UpdateCheckException("Jenkins returned status code " + response.statusCode());
-            }
-            return response.body();
-        }).thenApply(body -> {
-            final Matcher matcher = JENKINS_RESPONSE_BUILD_PATTERN.matcher(body);
-            if (!matcher.find()) {
-                throw new UpdateCheckException("Couldn't find latest build in response");
-            }
-            try {
-                return Integer.parseInt(matcher.group(1));
-            } catch (NumberFormatException e) {
-                throw new UpdateCheckException("Couldn't parse build", e);
+                throw new UpdateCheckException("Couldn't parse release tag", e);
             }
         });
     }
@@ -156,36 +104,13 @@ public class UpdateNotification {
         if (installed == null) {
             return;
         }
-        if (lastBuild != -1 && Settings.settings().ENABLED_COMPONENTS.SNAPSHOT_UPDATE_NOTIFICATIONS) {
-            int difference = lastBuild - installed.build;
-            if (difference > 0) {
-                actor.print(Caption.of(
-                        "fawe.info.update-available.build",
-                        difference, installed.build, lastBuild,
-                        TextComponent.of(LINK_DOWNLOAD_JENKINS).clickEvent(ClickEvent.openUrl(LINK_DOWNLOAD_JENKINS))
-                ));
-            }
-        }
         if (installed.semver != null && lastRelease != null && Settings.settings().ENABLED_COMPONENTS.RELEASE_UPDATE_NOTIFICATIONS) {
-            if (hasUpdateSemver(installed.semver, lastRelease)) {
+            if (hasUpdate(installed.semver, installed.build, lastRelease)) {
                 actor.print(Caption.of(
                         "fawe.info.update-available.release",
-                        StringUtil.joinString(lastRelease, ".", 0),
-                        StringUtil.joinString(installed.semver, ".", 0),
-                        TextComponent.empty().children(List.of(
-                                TextComponent
-                                        .of("Modrinth")
-                                        .color(TextColor.GREEN)
-                                        .clickEvent(ClickEvent.openUrl(LINK_DOWNLOAD_MODRINTH)),
-                                TextComponent.empty().color(TextColor.GRAY)
-                        )),
-                        TextComponent.empty().children(List.of(
-                                TextComponent
-                                        .of("Hangar")
-                                        .color(TextColor.BLUE)
-                                        .clickEvent(ClickEvent.openUrl(LINK_DOWNLOAD_HANGAR)),
-                                TextComponent.empty().color(TextColor.GRAY)
-                        ))
+                        lastReleaseTag,
+                        installed.toString(),
+                        TextComponent.of("GitHub releases").clickEvent(ClickEvent.openUrl(LINK_DOWNLOAD_RELEASES))
                 ));
             }
         }
@@ -203,13 +128,27 @@ public class UpdateNotification {
         return false;
     }
 
+    @VisibleForTesting
+    static int[] parseReleaseTag(String semver, String forkBuild) {
+        int[] version = Arrays.stream(semver.split("\\.")).mapToInt(Integer::parseInt).toArray();
+        return new int[]{version[0], version[1], version[2], forkBuild == null ? 0 : Integer.parseInt(forkBuild)};
+    }
+
+    @VisibleForTesting
+    static boolean hasUpdate(int[] installedSemver, int installedBuild, int[] latestRelease) {
+        int[] latestSemver = Arrays.copyOfRange(latestRelease, 0, 3);
+        if (hasUpdateSemver(installedSemver, latestSemver)) {
+            return true;
+        }
+        return Arrays.equals(installedSemver, latestSemver) && latestRelease[3] > installedBuild;
+    }
+
     private static boolean hasUpdateInfo() {
-        return lastRelease != null || lastBuild != -1;
+        return lastRelease != null;
     }
 
     private static boolean isAnyUpdateCheckEnabled() {
-        return Settings.settings().ENABLED_COMPONENTS.RELEASE_UPDATE_NOTIFICATIONS
-                || Settings.settings().ENABLED_COMPONENTS.SNAPSHOT_UPDATE_NOTIFICATIONS;
+        return Settings.settings().ENABLED_COMPONENTS.RELEASE_UPDATE_NOTIFICATIONS;
     }
 
     private static final class UpdateCheckException extends RuntimeException {

@@ -20,6 +20,7 @@ public class FaweVersion {
     public final int build;
     public final int[] semver;
     public final boolean snapshot;
+    public final String versionString;
 
     public FaweVersion(int year, int month, int day, int[] semver, boolean snapshot, int hash, int build) {
         this.year = year;
@@ -29,10 +30,13 @@ public class FaweVersion {
         this.build = build;
         this.semver = semver;
         this.snapshot = snapshot;
+        this.versionString = null;
     }
 
     public FaweVersion(String version, String commit, String date) {
-        String[] split = version.substring(version.indexOf('=') + 1).split("-");
+        String versionString = version.substring(version.indexOf('=') + 1);
+        this.versionString = versionString;
+        String[] split = versionString.split("-");
         String[] split1 = split[0].split("\\.");
         int[] ver = new int[3];
         for (int i = 0; i < 3; i++) {
@@ -41,12 +45,23 @@ public class FaweVersion {
         this.semver = ver;
         this.snapshot = split.length > 1 && split[1].toLowerCase(Locale.ROOT).contains("snapshot");
         int buildIndex = this.snapshot ? 2 : 1;
-        this.build = split.length == buildIndex + 1 ? Integer.parseInt(split[buildIndex]) : 0;
-        this.hash = Integer.parseInt(commit.substring(commit.indexOf('=') + 1), 16);
+        this.build = split.length == buildIndex + 1 ? parseBuild(split[buildIndex]) : 0;
+        this.hash = Integer.parseInt(commit.substring(commit.indexOf('=') + 1).replaceFirst("^-", ""), 16);
         String[] split2 = date.substring(date.indexOf('=') + 1).split("\\.");
         this.year = Integer.parseInt(split2[0]);
         this.month = Integer.parseInt(split2[1]);
         this.day = Integer.parseInt(split2[2]);
+    }
+
+    /**
+     * Parse a build identifier, supporting fork release suffixes such as "folia.4".
+     */
+    private static int parseBuild(String build) {
+        int forkSeparator = build.indexOf('.');
+        if (forkSeparator >= 0) {
+            return Integer.parseInt(build.substring(forkSeparator + 1));
+        }
+        return Integer.parseInt(build);
     }
 
     public static FaweVersion tryParse(String version, String commit, String date) {
@@ -60,6 +75,9 @@ public class FaweVersion {
 
     @Override
     public String toString() {
+        if (versionString != null) {
+            return "FastAsyncWorldEdit-" + versionString;
+        }
         if (semver == null) {
             return "FastAsyncWorldEdit-NoVer-SNAPSHOT";
         } else {

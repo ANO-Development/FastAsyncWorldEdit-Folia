@@ -11,6 +11,7 @@ import com.fastasyncworldedit.core.util.FoliaSupport;
 import com.fastasyncworldedit.core.util.MainUtil;
 import com.fastasyncworldedit.core.util.MemUtil;
 import com.fastasyncworldedit.core.util.RandomTextureUtil;
+import com.fastasyncworldedit.core.util.StringMan;
 import com.fastasyncworldedit.core.util.TaskManager;
 import com.fastasyncworldedit.core.util.TextureUtil;
 import com.fastasyncworldedit.core.util.WEManager;
@@ -343,8 +344,12 @@ public class Fawe {
             br.close();
             this.version = FaweVersion.tryParse(versionString, commitString, dateString);
             Settings.settings().DATE = new Date(100 + version.year, version.month, version.day).toString();
-            Settings.settings().BUILD = "https://ci.athion.net/job/FastAsyncWorldEdit/" + version.build;
-            Settings.settings().COMMIT = "https://github.com/IntellectualSites/FastAsyncWorldEdit/commit/" + Integer.toHexString(version.hash);
+            if (version.semver != null) {
+                Settings.settings().BUILD = "https://github.com/ANO-Development/FastAsyncWorldEdit-Folia/releases/tag/"
+                        + StringMan.join(version.semver, ".") + "-folia." + version.build;
+            }
+            Settings.settings().COMMIT = "https://github.com/ANO-Development/FastAsyncWorldEdit-Folia/commit/"
+                    + Integer.toHexString(version.hash);
         } catch (Throwable ignored) {
         }
         try {
