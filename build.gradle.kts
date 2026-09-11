@@ -6,12 +6,12 @@ plugins {
     alias(libs.plugins.codecov)
     jacoco
     id("buildlogic.common")
-    id("com.gradleup.nmcp.aggregation") version "1.6.1"
+    id("com.gradleup.nmcp.aggregation") version "1.6.2"
     id("xyz.jpenilla.run-paper") version "3.1.0"
 }
 
 val rootVersion: String = (extra.properties["rootVersion"] as? String) ?: "2.15.5"
-val snapshot: String = (extra.properties["snapshot"] as? String) ?: "folia.4"
+val snapshot: String = (extra.properties["snapshot"] as? String) ?: "folia.5"
 var revision: String = (extra.properties["revision"] as? String) ?: ""
 var buildNumber: String = (extra.properties["buildNumber"] as? String) ?: ""
 var date: String = (extra.properties["date"] as? String) ?: ""
