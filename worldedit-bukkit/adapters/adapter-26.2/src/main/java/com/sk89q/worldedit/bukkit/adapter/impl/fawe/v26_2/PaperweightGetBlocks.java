@@ -203,7 +203,7 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
             BlockEntity blockEntity = getChunk().getBlockEntity(new BlockPos(
                     (x & 15) + (chunkX << 4), y, (z & 15) + (chunkZ << 4)
             ));
-            return blockEntity == null ? null : NMS_TO_TILE.apply(blockEntity);
+            return blockEntity == null ? null : FaweCompoundTag.of(NMS_TO_TILE.apply(blockEntity).linTag());
         });
     }
 
@@ -217,7 +217,7 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
             Map<BlockVector3, FaweCompoundTag> snapshots = new HashMap<>(nmsTiles.size());
             nmsTiles.forEach((position, blockEntity) -> snapshots.put(
                     posNms2We.apply(position),
-                    NMS_TO_TILE.apply(blockEntity)
+                    FaweCompoundTag.of(NMS_TO_TILE.apply(blockEntity).linTag())
             ));
             return Map.copyOf(snapshots);
         });
@@ -1049,6 +1049,9 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
     @SuppressWarnings("unchecked")
     public boolean trim(boolean aggressive) {
         synchronized (this) {
+            if (levelChunk != null && serverLevel.getChunkSource().getChunkAtIfLoadedImmediately(chunkX, chunkZ) != levelChunk) {
+                aggressive = true;
+            }
             if (sections == null && (!aggressive || levelChunk == null)) {
                 skyLight = new DataLayer[getSectionCount()];
                 blockLight = new DataLayer[getSectionCount()];
