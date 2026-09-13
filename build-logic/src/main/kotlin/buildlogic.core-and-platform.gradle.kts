@@ -10,9 +10,12 @@ ext["internalVersion"] = "$version+${rootProject.ext["gitCommitHash"]}"
 val publishingExtension = the<PublishingExtension>()
 
 configure<SigningExtension> {
-    if (!version.toString().endsWith("-SNAPSHOT")) {
-        val signingKey: String? by project
-        val signingPassword: String? by project
+    val signingKey: String? by project
+    val signingPassword: String? by project
+    // Only sign when key material is actually supplied (e.g. by CI for a real Maven
+    // Central release). Without it, publishing - including to the private ANO repo -
+    // proceeds unsigned rather than failing on missing keys.
+    if (!signingKey.isNullOrBlank() && !version.toString().endsWith("-SNAPSHOT")) {
         useInMemoryPgpKeys(signingKey, signingPassword)
         isRequired
         sign(publishingExtension.publications)

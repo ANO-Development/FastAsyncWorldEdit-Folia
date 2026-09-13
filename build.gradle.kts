@@ -135,3 +135,40 @@ nmcpAggregation {
 
     publishAllProjectsProbablyBreakingProjectIsolation()
 }
+
+// Private ANO release/snapshot repository, for modules that already apply maven-publish
+// (see build-logic/src/main/kotlin/buildlogic.core-and-platform.gradle.kts and buildlogic.libs.gradle.kts).
+// Host URLs and username come from ~/.gradle/gradle.properties (not committed, so the host address
+// isn't exposed in this public repo); the password is read directly from the ANO_MAVEN_TOKEN
+// environment variable and is never written to disk. If those properties aren't set locally,
+// these repositories are simply skipped.
+subprojects {
+    plugins.withId("maven-publish") {
+        configure<PublishingExtension> {
+            val anoReleasesUrl = providers.gradleProperty("anoPrivateReleasesUrl")
+            val anoSnapshotsUrl = providers.gradleProperty("anoPrivateSnapshotsUrl")
+            repositories {
+                if (anoReleasesUrl.isPresent) {
+                    maven {
+                        name = "anoPrivateReleases"
+                        url = uri(anoReleasesUrl.get())
+                        credentials {
+                            username = providers.gradleProperty("anoPrivateUsername").orNull
+                            password = providers.environmentVariable("ANO_MAVEN_TOKEN").orNull
+                        }
+                    }
+                }
+                if (anoSnapshotsUrl.isPresent) {
+                    maven {
+                        name = "anoPrivateSnapshots"
+                        url = uri(anoSnapshotsUrl.get())
+                        credentials {
+                            username = providers.gradleProperty("anoPrivateUsername").orNull
+                            password = providers.environmentVariable("ANO_MAVEN_TOKEN").orNull
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
