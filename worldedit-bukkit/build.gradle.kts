@@ -139,6 +139,7 @@ dependencies {
     testImplementation(libs.mockito.core)
     testImplementation(libs.adventureApi)
     testImplementation(libs.checkerqual)
+    testRuntimeOnly("org.slf4j:slf4j-api:2.0.17")
 }
 
 tasks.named<Copy>("processResources") {

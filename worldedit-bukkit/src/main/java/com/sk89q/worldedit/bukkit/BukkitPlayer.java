@@ -388,16 +388,9 @@ public class BukkitPlayer extends AbstractPlayerActor {
 
     @Override
     public com.sk89q.worldedit.util.Location getLocation() {
-        return withPlayer(() -> {
-            Location nativeLocation = player.getLocation();
-            Vector3 position = BukkitAdapter.asVector(nativeLocation);
-            return new com.sk89q.worldedit.util.Location(
-                    BukkitAdapter.adapt(nativeLocation.getWorld()),
-                    position,
-                    nativeLocation.getYaw(),
-                    nativeLocation.getPitch()
-            );
-        });
+        // CraftEntity exposes a location snapshot without accessing owner-only entity state.
+        // Scheduling this read can deadlock callers inspecting players in another region.
+        return BukkitAdapter.adapt(player.getLocation());
     }
 
     @Override

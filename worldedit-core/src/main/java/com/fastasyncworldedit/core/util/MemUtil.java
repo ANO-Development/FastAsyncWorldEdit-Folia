@@ -4,15 +4,21 @@ import com.fastasyncworldedit.core.configuration.Settings;
 import com.sk89q.worldedit.internal.util.LogManagerCompat;
 import org.apache.logging.log4j.Logger;
 
+import java.lang.management.ManagementFactory;
+import java.lang.management.MemoryUsage;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class MemUtil {
 
     private static final Logger LOGGER = LogManagerCompat.getLogger();
     private static final AtomicBoolean memory = new AtomicBoolean(false);
     private static final AtomicBoolean slower = new AtomicBoolean(false);
+    private static final long WARNING_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(30);
+    private static final AtomicLong lastWarning = new AtomicLong(System.nanoTime() - WARNING_INTERVAL_NANOS);
 
     public static boolean isMemoryFree() {
         return !memory.get();
@@ -24,8 +30,6 @@ public class MemUtil {
 
     public static boolean isMemoryLimitedSlow() {
         if (memory.get()) {
-            System.gc();
-            System.gc();
             calculateMemory();
             return memory.get();
         }
@@ -45,26 +49,25 @@ public class MemUtil {
     }
 
     public static int calculateMemory() {
-        final long heapSize = Runtime.getRuntime().totalMemory();
-        final long heapMaxSize = Runtime.getRuntime().maxMemory();
-        if (heapSize < heapMaxSize) {
-            return Integer.MAX_VALUE;
+        return calculateMemory(ManagementFactory.getMemoryMXBean().getHeapMemoryUsage());
+    }
+
+    static int calculateMemory(MemoryUsage heap) {
+        long maximum = heap.getMax() > 0 ? heap.getMax() : Runtime.getRuntime().maxMemory();
+        double usedPercent = 100.0 * heap.getUsed() / maximum;
+        int limit = Settings.settings().MAX_MEMORY_PERCENT;
+        int slowdown = Settings.settings().SLOWER_MEMORY_PERCENT;
+        slower.set(slowdown > 0 && slowdown <= 100 && usedPercent >= slowdown);
+        if (limit > 0 && limit < 100 && usedPercent >= limit) {
+            memoryLimitedTask();
+            return (int) Math.max(0, 100 - usedPercent);
         }
-        final long heapFreeSize = Runtime.getRuntime().freeMemory();
-        final int size = (int) ((heapFreeSize * 100) / heapMaxSize);
-        if (size > (100 - Settings.settings().MAX_MEMORY_PERCENT)) {
-            memoryPlentifulTask();
-            return Integer.MAX_VALUE;
-        }
-        return size;
+        memoryPlentifulTask();
+        return Integer.MAX_VALUE;
     }
 
     public static void checkAndSetApproachingLimit() {
-        final long heapFreeSize = Runtime.getRuntime().freeMemory();
-        final long heapMaxSize = Runtime.getRuntime().maxMemory();
-        final int size = (int) ((heapFreeSize * 100) / heapMaxSize);
-        boolean limited = size >= Settings.settings().SLOWER_MEMORY_PERCENT;
-        slower.set(limited);
+        calculateMemory();
     }
 
     private static final Queue<Runnable> memoryLimitedTasks = new ConcurrentLinkedQueue<>();
@@ -83,19 +86,30 @@ public class MemUtil {
     }
 
     public static void memoryLimitedTask() {
-        System.gc();
-        System.gc();
-        for (Runnable task : memoryLimitedTasks) {
-            task.run();
+        if (memory.compareAndSet(false, true)) {
+            long now = System.nanoTime();
+            long previous = lastWarning.get();
+            if (now - previous >= WARNING_INTERVAL_NANOS && lastWarning.compareAndSet(previous, now)) {
+                LOGGER.warn("High heap usage detected; FAWE will limit edits until memory usage recovers.");
+            }
+            runMemoryTasks(memoryLimitedTasks);
         }
-        memory.set(true);
     }
 
     public static void memoryPlentifulTask() {
-        for (Runnable task : memoryPlentifulTasks) {
-            task.run();
+        if (memory.compareAndSet(true, false)) {
+            runMemoryTasks(memoryPlentifulTasks);
         }
-        memory.set(false);
+    }
+
+    private static void runMemoryTasks(Queue<Runnable> tasks) {
+        for (Runnable task : tasks) {
+            try {
+                task.run();
+            } catch (RuntimeException exception) {
+                LOGGER.error("Memory pressure callback failed", exception);
+            }
+        }
     }
 
 }

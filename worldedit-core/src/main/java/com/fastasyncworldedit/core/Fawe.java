@@ -35,6 +35,7 @@ import java.io.InputStreamReader;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryMXBean;
 import java.lang.management.MemoryPoolMXBean;
+import java.lang.management.MemoryType;
 import java.lang.management.MemoryUsage;
 import java.util.Date;
 import java.util.List;
@@ -45,7 +46,6 @@ import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * [ WorldEdit action ]
@@ -421,37 +421,22 @@ public class Fawe {
             final MemoryMXBean memBean = ManagementFactory.getMemoryMXBean();
             final NotificationEmitter ne = (NotificationEmitter) memBean;
 
-            AtomicLong lastWarn = new AtomicLong(System.currentTimeMillis());
-            ne.addNotificationListener((notification, handback) -> {
-                final long heapSize = Runtime.getRuntime().totalMemory();
-                final long heapMaxSize = Runtime.getRuntime().maxMemory();
-                if (heapSize < heapMaxSize) {
-                    return;
-                }
-                final long time = System.currentTimeMillis();
-                if (time > lastWarn.get() + TimeUnit.SECONDS.toMillis(30)) {
-                    lastWarn.set(time);
-                    LOGGER.warn("High memory usage detected, FAWE will attempt to slow operations to prevent a crash.");
-                }
-                MemUtil.memoryLimitedTask();
-            }, null, null);
+            ne.addNotificationListener((notification, handback) -> MemUtil.calculateMemory(), null, null);
 
             final List<MemoryPoolMXBean> memPools = ManagementFactory.getMemoryPoolMXBeans();
             for (final MemoryPoolMXBean mp : memPools) {
-                if (mp.isCollectionUsageThresholdSupported()) {
+                if (mp.getType() == MemoryType.HEAP && mp.isCollectionUsageThresholdSupported()) {
                     final MemoryUsage mu = mp.getUsage();
                     final long max = mu.getMax();
-                    if (max < 0) {
+                    if (max <= 0) {
                         continue;
                     }
                     final long alert = (max * Settings.settings().MAX_MEMORY_PERCENT) / 100;
                     mp.setCollectionUsageThreshold(alert);
                 }
             }
-        } catch (Throwable ignored) {
-            LOGGER.error("FAWE encountered an error trying to listen to JVM memory.\n"
-                    + "Please change your Java security settings or disable this message by"
-                    + "changing 'max-memory-percent' in the config files to '-1'.");
+        } catch (RuntimeException exception) {
+            LOGGER.debug("JVM memory notifications are unavailable; periodic heap monitoring remains active.", exception);
         }
     }
 
