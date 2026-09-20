@@ -545,13 +545,32 @@ public class LocalSession implements TextureHolder {
     }
 
     public void remember(EditSession editSession, boolean append, int limitMb) {
+        RuntimeException failure = null;
+        try {
+            editSession.flushQueue();
+        } catch (RuntimeException exception) {
+            failure = exception;
+        }
+        try {
+            rememberFlushedChanges(editSession, append, limitMb);
+        } catch (RuntimeException exception) {
+            if (failure == null) {
+                failure = exception;
+            } else if (failure != exception) {
+                failure.addSuppressed(exception);
+            }
+        }
+        if (failure != null) {
+            throw failure;
+        }
+    }
+
+    private void rememberFlushedChanges(EditSession editSession, boolean append, int limitMb) {
         historyWriteLock.lock();
         try {
             if (Settings.settings().HISTORY.USE_DISK) {
                 LocalSession.MAX_HISTORY_SIZE = Integer.MAX_VALUE;
             }
-            // It should have already been flushed, but just in case!
-            editSession.flushQueue();
             if (editSession.getChangeSet() == null || limitMb == 0 || historySize >> 20 > limitMb && !append) {
                 return;
             }
@@ -642,6 +661,7 @@ public class LocalSession implements TextureHolder {
             }
             try (EditSession newEditSession = builder.build()) {
                 newEditSession.setBlocks(changeSet, ChangeSetExecutor.Type.UNDO);
+                newEditSession.flushQueue();
                 setDirty();
                 historyNegativeIndex++;
                 return newEditSession;
@@ -673,9 +693,7 @@ public class LocalSession implements TextureHolder {
         }
         loadSessionHistoryFromDisk(actor.getUniqueId(), world);
         if (getHistoryNegativeIndex() > 0) {
-            setDirty();
-            historyNegativeIndex--;
-            ChangeSet changeSet = getChangeSet(history.get(getHistoryIndex()));
+            ChangeSet changeSet = getChangeSet(history.get(getHistoryIndex() + 1));
             EditSessionBuilder builder = WorldEdit.getInstance().newEditSessionBuilder().world(world)
                     .checkMemory(false)
                     .changeSetNull()
@@ -690,6 +708,9 @@ public class LocalSession implements TextureHolder {
             }
             try (EditSession newEditSession = builder.build()) {
                 newEditSession.setBlocks(changeSet, ChangeSetExecutor.Type.REDO);
+                newEditSession.flushQueue();
+                setDirty();
+                historyNegativeIndex--;
                 return newEditSession;
             }
         }

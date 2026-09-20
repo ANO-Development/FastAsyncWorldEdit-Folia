@@ -224,12 +224,24 @@ class ApplyTask<F extends Filter> extends RecursiveAction implements Runnable {
     }
 
     private void onCompletion() {
+        RuntimeException failure = null;
         for (ForkJoinTask<?> task : flushQueues()) {
-            if (task.tryUnfork()) {
-                task.invoke();
-            } else {
-                task.join();
+            try {
+                if (task.tryUnfork()) {
+                    task.invoke();
+                } else {
+                    task.join();
+                }
+            } catch (RuntimeException exception) {
+                if (failure == null) {
+                    failure = exception;
+                } else if (failure != exception) {
+                    failure.addSuppressed(exception);
+                }
             }
+        }
+        if (failure != null) {
+            throw failure;
         }
     }
 

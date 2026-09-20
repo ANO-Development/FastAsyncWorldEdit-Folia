@@ -781,14 +781,33 @@ public final class PlatformCommandManager {
             // Require null CommandEvent#getSession as it means the editsession is being handled somewhere else.
             if (editSessionOpt.isPresent() && event.getSession() == null) {
                 EditSession editSession = editSessionOpt.get();
-                editSession.close();
-                session.remember(editSession);
+                boolean completed = false;
+                try {
+                    editSession.close();
+                    completed = true;
+                } catch (FaweException exception) {
+                    actor.printError(exception.getComponent());
+                } catch (RuntimeException exception) {
+                    handleUnknownException(actor, exception);
+                } finally {
+                    try {
+                        session.remember(editSession);
+                    } catch (FaweException exception) {
+                        if (completed) {
+                            actor.printError(exception.getComponent());
+                        }
+                        completed = false;
+                    } catch (RuntimeException exception) {
+                        completed = false;
+                        handleUnknownException(actor, exception);
+                    }
+                }
 
                 long time = System.currentTimeMillis() - start;
                 double timeS = (time / 1000.0);
                 int changed = editSession.getBlockChangeCount();
                 double throughput = timeS == 0 ? changed : changed / timeS;
-                if (time > 1000) {
+                if (completed && time > 1000) {
                     actor.print(Caption.of(
                             "worldedit.command.time-elapsed",
                             TextComponent.of(timeS),

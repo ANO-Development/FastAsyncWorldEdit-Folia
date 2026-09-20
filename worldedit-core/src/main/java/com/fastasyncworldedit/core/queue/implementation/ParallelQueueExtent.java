@@ -30,7 +30,6 @@ import com.sk89q.worldedit.function.operation.Operation;
 import com.sk89q.worldedit.function.operation.RunContext;
 import com.sk89q.worldedit.function.pattern.BlockPattern;
 import com.sk89q.worldedit.function.pattern.Pattern;
-import com.sk89q.worldedit.internal.util.LogManagerCompat;
 import com.sk89q.worldedit.math.BlockVector2;
 import com.sk89q.worldedit.math.BlockVector3;
 import com.sk89q.worldedit.regions.Region;
@@ -41,7 +40,6 @@ import com.sk89q.worldedit.world.block.BaseBlock;
 import com.sk89q.worldedit.world.block.BlockState;
 import com.sk89q.worldedit.world.block.BlockStateHolder;
 import com.sk89q.worldedit.world.block.BlockType;
-import org.apache.logging.log4j.Logger;
 
 import javax.annotation.Nullable;
 import java.util.Iterator;
@@ -50,8 +48,6 @@ import java.util.Set;
 import java.util.concurrent.ForkJoinTask;
 
 public class ParallelQueueExtent extends PassthroughExtent {
-
-    private static final Logger LOGGER = LogManagerCompat.getLogger();
 
     private final World world;
     private final QueueHandler handler;
@@ -159,11 +155,9 @@ public class ParallelQueueExtent extends PassthroughExtent {
             // wait for task to finish
             try {
                 task.join();
-            } catch (Throwable e) {
-                LOGGER.catching(e);
+            } finally {
+                filter.join();
             }
-            // Join filters
-            filter.join();
         }
         return filter;
     }

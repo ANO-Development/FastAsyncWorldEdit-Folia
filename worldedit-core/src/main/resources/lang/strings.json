@@ -94,6 +94,7 @@
   "fawe.error.mask.angle": "Cannot combine degree with block-step",
   "fawe.error.invalid-flag": "The flag {0} is not applicable here",
   "fawe.error.lighting": "Error when attempting lighting. You may need to reload the chunks to see the edit.",
+  "fawe.error.chunk-write": "Some chunks could not be written. This edit may be partial. Check the server log before retrying or undoing.",
   "fawe.error.parser.invalid-data": "Invalid data: {0}",
   "fawe.error.unsupported": "Unsupported!",
   "fawe.error.invalid-block-type": "Does not match a valid block type: {0}",

@@ -62,6 +62,7 @@ dependencies {
 
     // Tests
     testRuntimeOnly(libs.log4j.core)
+    testRuntimeOnly(libs.lz4Java)
     testImplementation(libs.parallelgzip)
     testImplementation(libs.sparsebitset)
 }

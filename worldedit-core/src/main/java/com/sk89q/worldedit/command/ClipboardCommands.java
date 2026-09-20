@@ -492,6 +492,7 @@ public class ClipboardCommands {
         if (onlySelect) {
             actor.print(Caption.of("worldedit.paste.selected"));
         } else {
+            editSession.flushQueue();
             actor.print(Caption.of("fawe.worldedit.paste.command.paste", to));
         }
 
@@ -595,6 +596,7 @@ public class ClipboardCommands {
         if (onlySelect) {
             actor.print(Caption.of("worldedit.paste.selected"));
         } else {
+            editSession.flushQueue();
             actor.print(Caption.of("worldedit.paste.pasted", TextComponent.of(to.toString())));
         }
         messages.forEach(actor::print);
