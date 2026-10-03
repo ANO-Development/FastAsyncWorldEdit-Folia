@@ -1,8 +1,9 @@
 package com.fastasyncworldedit.core.queue.implementation;
 
 import com.fastasyncworldedit.core.Fawe;
-import com.fastasyncworldedit.core.configuration.Settings;
+import com.fastasyncworldedit.core.FaweCache;
 import com.fastasyncworldedit.core.configuration.Caption;
+import com.fastasyncworldedit.core.configuration.Settings;
 import com.fastasyncworldedit.core.extent.PassthroughExtent;
 import com.fastasyncworldedit.core.extent.filter.block.CharFilterBlock;
 import com.fastasyncworldedit.core.extent.filter.block.ChunkFilterBlock;
@@ -21,6 +22,7 @@ import com.fastasyncworldedit.core.queue.implementation.chunk.NullChunk;
 import com.fastasyncworldedit.core.util.MathMan;
 import com.fastasyncworldedit.core.util.MemUtil;
 import com.fastasyncworldedit.core.wrappers.WorldWrapper;
+import com.google.common.util.concurrent.ForwardingFuture;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.Uninterruptibles;
 import com.sk89q.worldedit.EditSession;
@@ -38,6 +40,8 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -70,7 +74,8 @@ public class SingleThreadQueueExtent extends ExtentBatchProcessorHolder implemen
     // Array for lazy avoidance of concurrent modification exceptions and needless overcomplication of code (synchronisation is
     // not very important)
     private boolean[] faweExceptionReasonsUsed = new boolean[FaweException.Type.values().length];
-    private final AtomicReference<Throwable> submissionFailure = new AtomicReference<>();
+    private AtomicReference<Throwable> submissionFailure = new AtomicReference<>();
+    private final AtomicBoolean flushing = new AtomicBoolean();
     private SideEffectSet sideEffectSet = SideEffectSet.defaults();
     private int targetSize = Settings.settings().QUEUE.TARGET_SIZE;
 
@@ -176,7 +181,7 @@ public class SingleThreadQueueExtent extends ExtentBatchProcessorHolder implemen
         this.setPostProcessor(EmptyBatchProcessor.getInstance());
         this.world = null;
         this.faweExceptionReasonsUsed = new boolean[FaweException.Type.values().length];
-        this.submissionFailure.set(null);
+        this.submissionFailure = new AtomicReference<>();
         this.targetSize = Settings.settings().QUEUE.TARGET_SIZE;
     }
 
@@ -227,9 +232,13 @@ public class SingleThreadQueueExtent extends ExtentBatchProcessorHolder implemen
         this.lastChunk.compareAndExchange(chunk, null);
         final long index = MathMan.pairInt(chunk.getX(), chunk.getZ());
         getChunkLock.lock();
-        chunks.remove(index, chunk);
-        getChunkLock.unlock();
-        V future = submitUnchecked(chunk);
+        try {
+            chunks.remove(index, chunk);
+        } finally {
+            getChunkLock.unlock();
+        }
+        V submitted = submitUnchecked(chunk);
+        V future = (V) completionOnly(submitted);
         submissions.add(future);
         return future;
     }
@@ -238,6 +247,8 @@ public class SingleThreadQueueExtent extends ExtentBatchProcessorHolder implemen
      * Submit without first checking that it has been removed from the chunk map
      */
     private <V extends Future<V>> V submitUnchecked(IQueueChunk chunk) {
+        checkFailure();
+        awaitMemory();
         if (chunk.isEmpty()) {
             if (chunk instanceof ChunkHolder<?> holder) {
                 long age = holder.initAge();
@@ -266,14 +277,32 @@ public class SingleThreadQueueExtent extends ExtentBatchProcessorHolder implemen
             }
         }
 
-        return (V) Fawe.instance().getQueueHandler().submit(chunk);
+        return (V) Fawe.instance().getQueueHandler().submitToBlocking(() -> {
+            checkFailure();
+            try {
+                return chunk.call();
+            } catch (Exception | Error failure) {
+                recordFailure(failure);
+                throw failure;
+            }
+        });
     }
 
     @Override
     public <V extends Future<V>> V submitTaskUnchecked(Callable<V> callable) {
-        V future = (V) Fawe.instance().getQueueHandler().submitToBlocking(callable);
+        V future = (V) completionOnly(Fawe.instance().getQueueHandler().submitToBlocking(callable));
         submissions.add(future);
         return future;
+    }
+
+    private static <T> Future<T> completionOnly(Future<T> future) {
+        return new ForwardingFuture.SimpleForwardingFuture<T>(future) {
+            @Override
+            public boolean cancel(boolean mayInterruptIfRunning) {
+                // Edit cancellation stops unstarted chunks; accepted writes must finish their audit/history callbacks.
+                return false;
+            }
+        };
     }
 
     @Override
@@ -320,47 +349,50 @@ public class SingleThreadQueueExtent extends ExtentBatchProcessorHolder implemen
 
     @Override
     public final IQueueChunk getOrCreateChunk(int x, int z) {
+        checkFailure();
         final IQueueChunk lastChunk = this.lastChunk.get();
         if (lastChunk != null && lastChunk.getX() == x && lastChunk.getZ() == z) {
             return lastChunk;
         }
+        awaitMemory();
         final long pair = MathMan.pairInt(x, z);
         if (!processGet(x, z) || (Settings.settings().REGION_RESTRICTIONS_OPTIONS.RESTRICT_TO_SAFE_RANGE
                 && (x > 1875000 || z > 1875000 || x < -1875000 || z < -1875000))) {
             // don't store as last chunk, not worth it
             return NullChunk.getInstance();
         }
-        getChunkLock.lock();
-        try {
-            IQueueChunk chunk = chunks.get(pair);
-            if (chunk != null) {
-                this.lastChunk.set(chunk);
-                return chunk;
-            }
-            final int size = chunks.size();
-            final boolean lowMem = MemUtil.isMemoryLimited();
-            // If queueing is enabled AND either of the following
-            //  - memory is low & queue size > num threads + 8
-            //  - queue size > target size and primary queue has less than num threads submissions
-            int targetSize = lowMem ? Settings.settings().QUEUE.PARALLEL_THREADS + 8 : this.targetSize;
-            if (enabledQueue && size > targetSize && (lowMem || Fawe.instance().getQueueHandler().isUnderutilized())) {
-                IQueueChunk toSubmit = chunks.removeFirst();
-                this.lastChunk.compareAndExchange(toSubmit, null);
-                final Future future = submitUnchecked(toSubmit);
-                if (future != null) {
-                    pollSubmissions(targetSize, lowMem);
-                    submissions.add(future);
+        while (true) {
+            IQueueChunk toSubmit;
+            int capacity = Math.max(1, targetSize);
+            getChunkLock.lock();
+            try {
+                IQueueChunk chunk = chunks.get(pair);
+                if (chunk != null) {
+                    this.lastChunk.set(chunk);
+                    return chunk;
                 }
+                if (!enabledQueue || chunks.size() < capacity) {
+                    chunk = wrap(poolOrCreate(x, z));
+                    chunks.put(pair, chunk);
+                    this.lastChunk.set(chunk);
+                    return chunk;
+                }
+                toSubmit = chunks.removeFirst();
+                this.lastChunk.compareAndExchange(toSubmit, null);
+            } finally {
+                getChunkLock.unlock();
             }
-            chunk = poolOrCreate(x, z);
-            chunk = wrap(chunk);
-
-            chunks.put(pair, chunk);
-            this.lastChunk.set(chunk);
-
-            return chunk;
-        } finally {
-            getChunkLock.unlock();
+            // Capacity waits must not hold the queue's chunk-map lock.
+            pollSubmissions(capacity - 1, true);
+            checkFailure();
+            try {
+                submissions.add(submitUnchecked(toSubmit));
+            } catch (RuntimeException failure) {
+                recordFailure(failure);
+                throw failure;
+            }
+            pollSubmissions(0, false);
+            checkFailure();
         }
     }
 
@@ -413,6 +445,10 @@ public class SingleThreadQueueExtent extends ExtentBatchProcessorHolder implemen
                     submissions.add(next);
                     return;
                 }
+                if (!next.isDone() && Fawe.isMainThread()) {
+                    submissions.add(next);
+                    throw new IllegalStateException("Cannot wait for chunk completion on a tick thread");
+                }
                 try {
                     next = (Future<?>) Uninterruptibles.getUninterruptibly(next);
                 } catch (ExecutionException exception) {
@@ -426,46 +462,85 @@ public class SingleThreadQueueExtent extends ExtentBatchProcessorHolder implemen
         }
     }
 
-    private void recordFailure(Throwable failure) {
-        if (submissionFailure.compareAndSet(null, failure)) {
-            if (failure instanceof FaweException exception) {
-                Fawe.handleFaweException(faweExceptionReasonsUsed, exception, LOGGER);
-            } else {
-                LOGGER.error("Chunk write failed; the edit may be incomplete", failure);
-            }
-        }
+    void setFailureState(AtomicReference<Throwable> failure) {
+        submissionFailure = failure;
     }
 
     @Override
-    public synchronized void flush() {
-        if (!chunks.isEmpty()) {
-            getChunkLock.lock();
-            try {
-                while (!chunks.isEmpty()) {
-                    IQueueChunk chunk = chunks.removeFirst();
-                    this.lastChunk.compareAndExchange(chunk, null);
-                    try {
-                        final Future future = submitUnchecked(chunk);
-                        if (future != null) {
-                            submissions.add(future);
-                            if (MemUtil.isMemoryLimited()) {
-                                pollSubmissions(Settings.settings().QUEUE.PARALLEL_THREADS, true);
-                            }
-                        }
-                    } catch (RuntimeException exception) {
-                        recordFailure(exception);
-                    }
-                }
-            } finally {
-                getChunkLock.unlock();
-            }
-        }
-        pollSubmissions(0, true);
+    public boolean cancel() {
+        submissionFailure.compareAndSet(null, FaweCache.MANUAL);
+        return true;
+    }
+
+    void checkFailure() {
         Throwable failure = submissionFailure.get();
         if (failure != null) {
             FaweException exception = new FaweException(Caption.of("fawe.error.chunk-write"));
             exception.initCause(failure);
             throw exception;
+        }
+    }
+
+    private void awaitMemory() {
+        if (!MemUtil.isMemoryLimited()) return;
+        if (Fawe.isMainThread()) throw FaweCache.LOW_MEMORY;
+        long started = System.nanoTime();
+        long timeout = TimeUnit.MILLISECONDS.toNanos(Math.max(0, Settings.settings().QUEUE.ADMISSION_TIMEOUT_MS));
+        while (MemUtil.isMemoryLimitedSlow()) {
+            checkFailure();
+            if (System.nanoTime() - started >= timeout) throw FaweCache.LOW_MEMORY;
+            try {
+                TimeUnit.MILLISECONDS.sleep(25);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Interrupted waiting for edit memory capacity", interrupted);
+            }
+        }
+    }
+
+    void recordFailure(Throwable failure) {
+        if (submissionFailure.compareAndSet(null, failure)) {
+            if (failure instanceof FaweException exception) {
+                faweExceptionReasonsUsed[exception.getType().ordinal()] = true;
+            }
+            LOGGER.error("Chunk write failed; the edit may be incomplete", failure);
+        }
+    }
+
+    @Override
+    public void flush() {
+        if (!flushing.compareAndSet(false, true)) {
+            throw new IllegalStateException("Concurrent flush of a single-threaded chunk queue");
+        }
+        try {
+            while (true) {
+                pollSubmissions(0, false);
+                IQueueChunk chunk;
+                getChunkLock.lock();
+                try {
+                    if (submissionFailure.get() != null) {
+                        chunks.clear();
+                        lastChunk.set(null);
+                        break;
+                    }
+                    if (chunks.isEmpty()) break;
+                    chunk = chunks.removeFirst();
+                    lastChunk.compareAndExchange(chunk, null);
+                } finally {
+                    getChunkLock.unlock();
+                }
+                try {
+                    pollSubmissions(Math.max(0, targetSize - 1), true);
+                    submissions.add(submitUnchecked(chunk));
+                } catch (RuntimeException failure) {
+                    recordFailure(failure);
+                }
+            }
+            // Drain accepted writes even after rejection; they may already have audit/history obligations.
+            pollSubmissions(0, true);
+            checkFailure();
+        } finally {
+            flushing.set(false);
         }
     }
 

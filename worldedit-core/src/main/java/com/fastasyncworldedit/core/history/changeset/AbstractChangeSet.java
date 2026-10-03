@@ -11,7 +11,6 @@ import com.fastasyncworldedit.core.queue.IChunkGet;
 import com.fastasyncworldedit.core.queue.IChunkSet;
 import com.fastasyncworldedit.core.util.NbtUtils;
 import com.fastasyncworldedit.core.util.TaskManager;
-import com.google.common.util.concurrent.Futures;
 import com.sk89q.jnbt.CompoundTag;
 import com.sk89q.worldedit.EditSession;
 import com.sk89q.worldedit.EditSessionBuilder;
@@ -48,7 +47,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * This batch processor writes changes to a concrete implementation.
@@ -61,7 +60,8 @@ public abstract class AbstractChangeSet implements ChangeSet, IBatchProcessor {
     private static final Logger LOGGER = LogManagerCompat.getLogger();
 
     private final World world;
-    private final AtomicInteger lastException = new AtomicInteger();
+    private final AtomicReference<Throwable> writeFailure = new AtomicReference<>();
+    private final ConcurrentLinkedQueue<Runnable> failedWrites = new ConcurrentLinkedQueue<>();
     private final Semaphore workerSemaphore = new Semaphore(1, false);
     private final ConcurrentLinkedQueue<Runnable> queue = new ConcurrentLinkedQueue<>();
     protected volatile boolean closed;
@@ -89,11 +89,10 @@ public abstract class AbstractChangeSet implements ChangeSet, IBatchProcessor {
 
     @Override
     public void flush() {
-        try {
-            // drain with this thread too
-            drainQueue(true);
-        } catch (Exception e) {
-            LOGGER.catching(e);
+        drainQueue(true);
+        Throwable failure = writeFailure.get();
+        if (failure != null) {
+            throw new IllegalStateException("Undo history is incomplete; failed snapshots remain retained", failure);
         }
     }
 
@@ -227,7 +226,8 @@ public abstract class AbstractChangeSet implements ChangeSet, IBatchProcessor {
 
     @Override
     public void postProcess(final IChunk chunk, final IChunkGet get, final IChunkSet set) {
-        addWriteTask(() -> processSet(chunk, get, set));
+        // The chunk completion must include its history write, not just enqueue another retained snapshot.
+        addWriteTask(() -> processSet(chunk, get, set), true);
     }
 
     @Override
@@ -368,7 +368,7 @@ public abstract class AbstractChangeSet implements ChangeSet, IBatchProcessor {
     }
 
     public boolean isEmpty() {
-        return queue.isEmpty() && workerSemaphore.availablePermits() == 1 && longSize() == 0;
+        return queue.isEmpty() && failedWrites.isEmpty() && workerSemaphore.availablePermits() == 1 && longSize() == 0;
     }
 
     public void add(BlockVector3 loc, BaseBlock from, BaseBlock to) {
@@ -416,33 +416,27 @@ public abstract class AbstractChangeSet implements ChangeSet, IBatchProcessor {
     }
 
     public Future<?> addWriteTask(final Runnable writeTask, final boolean completeNow) {
+        CompletableFuture<Void> result = new CompletableFuture<>();
         Runnable wrappedTask = () -> {
             try {
                 writeTask.run();
+                result.complete(null);
             } catch (Throwable t) {
+                failedWrites.add(writeTask);
+                writeFailure.compareAndSet(null, t);
+                result.completeExceptionally(t);
                 if (completeNow) {
                     throw t;
-                } else {
-                    int hash = t.getMessage().hashCode();
-                    if (lastException.getAndSet(hash) != hash) {
-                        LOGGER.catching(t);
-                    }
                 }
             }
         };
         if (completeNow) {
             wrappedTask.run();
-            return Futures.immediateVoidFuture();
         } else {
-            CompletableFuture<?> task = new CompletableFuture<>();
-            queue.add(() -> {
-                wrappedTask.run();
-                task.complete(null);
-            });
-            // make sure changes are processed
+            queue.add(wrappedTask);
             triggerWorker();
-            return task;
         }
+        return result;
     }
 
     private void triggerWorker() {
@@ -462,6 +456,7 @@ public abstract class AbstractChangeSet implements ChangeSet, IBatchProcessor {
                     workerSemaphore.acquire();
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
+                    throw new IllegalStateException("Interrupted while waiting for undo history", e);
                 }
             } else {
                 return; // another thread is draining the queue already, ignore

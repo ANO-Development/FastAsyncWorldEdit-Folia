@@ -1,13 +1,9 @@
 package com.fastasyncworldedit.core.queue.implementation;
 
-import com.fastasyncworldedit.core.Fawe;
 import com.fastasyncworldedit.core.extent.filter.block.ChunkFilterBlock;
-import com.fastasyncworldedit.core.internal.exception.FaweException;
 import com.fastasyncworldedit.core.queue.Filter;
-import com.sk89q.worldedit.internal.util.LogManagerCompat;
 import com.sk89q.worldedit.math.BlockVector3;
 import com.sk89q.worldedit.regions.Region;
-import org.apache.logging.log4j.Logger;
 
 import java.util.Collection;
 import java.util.concurrent.ConcurrentHashMap;
@@ -16,8 +12,6 @@ import java.util.concurrent.ForkJoinTask;
 import java.util.concurrent.RecursiveAction;
 
 class ApplyTask<F extends Filter> extends RecursiveAction implements Runnable {
-
-    private static final Logger LOGGER = LogManagerCompat.getLogger();
 
     private static final int INITIAL_REGION_SHIFT = 5;
     private static final int SHIFT_REDUCTION = 1;
@@ -42,8 +36,7 @@ class ApplyTask<F extends Filter> extends RecursiveAction implements Runnable {
             F originalFilter,
             ParallelQueueExtent parallelQueueExtent,
             ConcurrentMap<Thread, ThreadState<F>> stateCache,
-            boolean full,
-            boolean[] faweExceptionReasonsUsed
+            boolean full
     ) {
 
     }
@@ -65,14 +58,13 @@ class ApplyTask<F extends Filter> extends RecursiveAction implements Runnable {
             final Region region,
             final F filter,
             final ParallelQueueExtent parallelQueueExtent,
-            final boolean full, final boolean[] faweExceptionReasonsUsed
+            final boolean full
     ) {
         this.commonState = new CommonState<>(
                 filter,
                 parallelQueueExtent,
                 new ConcurrentHashMap<>(),
-                full,
-                faweExceptionReasonsUsed
+                full
         );
         this.region = region.clone();
         this.before = null;
@@ -108,54 +100,58 @@ class ApplyTask<F extends Filter> extends RecursiveAction implements Runnable {
 
     @Override
     protected void compute() {
-        if (this.minChunkX != this.maxChunkX || this.minChunkZ != this.maxChunkZ) {
-            ApplyTask<F> subtask = null;
-            int minRegionX = this.minChunkX >> this.shift;
-            int minRegionZ = this.minChunkZ >> this.shift;
-            int maxRegionX = this.maxChunkX >> this.shift;
-            int maxRegionZ = this.maxChunkZ >> this.shift;
-            // This task covers multiple regions. Create one subtask per region
-            for (int regionX = minRegionX; regionX <= maxRegionX; regionX++) {
-                for (int regionZ = minRegionZ; regionZ <= maxRegionZ; regionZ++) {
-                    if (shouldProcessDirectly()) {
-                        // assume we should do a bigger batch of work here - the other threads are busy for a while
-                        processRegion(regionX, regionZ, this.shift);
-                        continue;
+        ApplyTask<F> subtask = null;
+        try {
+            if (this.commonState.parallelQueueExtent.hasFailed()) return;
+            if (this.minChunkX != this.maxChunkX || this.minChunkZ != this.maxChunkZ) {
+                int minRegionX = this.minChunkX >> this.shift;
+                int minRegionZ = this.minChunkZ >> this.shift;
+                int maxRegionX = this.maxChunkX >> this.shift;
+                int maxRegionZ = this.maxChunkZ >> this.shift;
+                for (int regionX = minRegionX; regionX <= maxRegionX; regionX++) {
+                    for (int regionZ = minRegionZ; regionZ <= maxRegionZ; regionZ++) {
+                        if (this.commonState.parallelQueueExtent.hasFailed()) return;
+                        if (shouldProcessDirectly()) {
+                            processRegion(regionX, regionZ, this.shift);
+                            continue;
+                        }
+                        if (this.shift == 0 && !this.region.containsChunk(regionX, regionZ)) {
+                            continue;
+                        }
+                        subtask = new ApplyTask<>(
+                                this.commonState,
+                                this.region,
+                                subtask,
+                                regionX << this.shift,
+                                ((regionX + 1) << this.shift) - 1,
+                                regionZ << this.shift,
+                                ((regionZ + 1) << this.shift) - 1,
+                                this.shift
+                        );
+                        subtask.fork();
                     }
-                    if (this.shift == 0 && !this.region.containsChunk(regionX, regionZ)) {
-                        // if shift == 0, region coords are chunk coords
-                        continue; // chunks not intersecting with the region don't need a task
-                    }
-
-                    // creating more tasks will likely help parallelism as other threads aren't *that* busy
-                    subtask = new ApplyTask<>(
-                            this.commonState,
-                            this.region,
-                            subtask,
-                            regionX << this.shift,
-                            ((regionX + 1) << this.shift) - 1,
-                            regionZ << this.shift,
-                            ((regionZ + 1) << this.shift) - 1,
-                            this.shift
-                    );
-                    subtask.fork();
                 }
+            } else {
+                processChunk(this.minChunkX, this.minChunkZ);
             }
-            // try processing tasks in reverse order if not processed already, otherwise "wait" for completion
+        } catch (Throwable failure) {
+            this.commonState.parallelQueueExtent.recordFailure(failure);
+        } finally {
             while (subtask != null) {
-                if (subtask.tryUnfork()) {
-                    subtask.invoke();
-                } else {
-                    subtask.join();
+                try {
+                    if (subtask.tryUnfork()) {
+                        subtask.invoke();
+                    } else {
+                        subtask.join();
+                    }
+                } catch (Throwable failure) {
+                    this.commonState.parallelQueueExtent.recordFailure(failure);
                 }
                 subtask = subtask.before;
             }
-        } else {
-            // we reached a task for a single chunk, let's process it
-            processChunk(this.minChunkX, this.minChunkZ);
-        }
-        if (this.shift == INITIAL_REGION_SHIFT) {
-            onCompletion();
+            if (this.shift == INITIAL_REGION_SHIFT) {
+                onCompletion();
+            }
         }
     }
 
@@ -169,6 +165,7 @@ class ApplyTask<F extends Filter> extends RecursiveAction implements Runnable {
         try {
             for (int chunkX = regionX << shift; chunkX <= ((regionX  + 1) << shift) - 1; chunkX++) {
                 for (int chunkZ = regionZ << shift; chunkZ <= ((regionZ  + 1) << shift) - 1; chunkZ++) {
+                    if (this.commonState.parallelQueueExtent.hasFailed()) return;
                     if (!this.region.containsChunk(chunkX, chunkZ)) {
                         continue; // chunks not intersecting with the region must not be processed
                     }
@@ -213,18 +210,13 @@ class ApplyTask<F extends Filter> extends RecursiveAction implements Runnable {
                     this.commonState.full
             );
         } catch (Throwable t) {
-            if (t instanceof FaweException faweException) {
-                Fawe.handleFaweException(this.commonState.faweExceptionReasonsUsed, faweException, LOGGER);
-            } else if (t.getCause() instanceof FaweException faweException) {
-                Fawe.handleFaweException(this.commonState.faweExceptionReasonsUsed, faweException, LOGGER);
-            } else {
-                throw t;
-            }
+            // Keep joining sibling tasks; the shared failure stops their unstarted chunks and flush reports it.
+            state.queue.recordFailure(t);
         }
     }
 
     private void onCompletion() {
-        RuntimeException failure = null;
+        Throwable failure = null;
         for (ForkJoinTask<?> task : flushQueues()) {
             try {
                 if (task.tryUnfork()) {
@@ -232,7 +224,7 @@ class ApplyTask<F extends Filter> extends RecursiveAction implements Runnable {
                 } else {
                     task.join();
                 }
-            } catch (RuntimeException exception) {
+            } catch (RuntimeException | Error exception) {
                 if (failure == null) {
                     failure = exception;
                 } else if (failure != exception) {
@@ -240,9 +232,9 @@ class ApplyTask<F extends Filter> extends RecursiveAction implements Runnable {
                 }
             }
         }
-        if (failure != null) {
-            throw failure;
-        }
+        if (failure instanceof RuntimeException exception) throw exception;
+        if (failure instanceof Error error) throw error;
+        ((SingleThreadQueueExtent) this.commonState.parallelQueueExtent.getExtent()).checkFailure();
     }
 
     private ForkJoinTask<?>[] flushQueues() {

@@ -76,6 +76,38 @@ public class MultiBatchProcessor implements IBatchProcessor {
     }
 
     @Override
+    public AutoCloseable prepareChunk(IChunk chunk, IChunkSet set) throws Exception {
+        List<AutoCloseable> scopes = new ArrayList<>(processors.length);
+        try {
+            for (IBatchProcessor processor : processors) {
+                scopes.add(java.util.Objects.requireNonNull(processor.prepareChunk(chunk, set)));
+            }
+        } catch (Exception | Error failure) {
+            try {
+                closeScopes(scopes);
+            } catch (Exception | Error cleanupFailure) {
+                if (failure != cleanupFailure) failure.addSuppressed(cleanupFailure);
+            }
+            throw failure;
+        }
+        return () -> closeScopes(scopes);
+    }
+
+    private static void closeScopes(List<AutoCloseable> scopes) throws Exception {
+        Throwable failure = null;
+        for (int index = scopes.size() - 1; index >= 0; index--) {
+            try {
+                scopes.get(index).close();
+            } catch (Exception | Error exception) {
+                if (failure == null) failure = exception;
+                else if (failure != exception) failure.addSuppressed(exception);
+            }
+        }
+        if (failure instanceof Exception exception) throw exception;
+        if (failure instanceof Error error) throw error;
+    }
+
+    @Override
     public IChunkSet processSet(IChunk chunk, IChunkGet get, IChunkSet set) {
         Map<ProcessorScope, List<IBatchProcessor>> ordered = new EnumMap<>(ProcessorScope.class);
         IChunkSet chunkSet = set;
@@ -149,6 +181,7 @@ public class MultiBatchProcessor implements IBatchProcessor {
 
     @Override
     public void postProcess(IChunk chunk, IChunkGet get, IChunkSet set) {
+        Throwable failure = null;
         for (IBatchProcessor processor : processors) {
             try {
                 // We do NOT want to edit blocks in post processing
@@ -157,24 +190,13 @@ public class MultiBatchProcessor implements IBatchProcessor {
                 }
                 processor.postProcess(chunk, get, set);
             } catch (Throwable e) {
-                if (e instanceof FaweException) {
-                    Fawe.handleFaweException(faweExceptionReasonsUsed, (FaweException) e, LOGGER);
-                } else if (e.getCause() instanceof FaweException) {
-                    Fawe.handleFaweException(faweExceptionReasonsUsed, (FaweException) e.getCause(), LOGGER);
-                } else {
-                    String message = e.getMessage();
-                    int hash = message != null ? message.hashCode() : 0;
-                    if (lastException != hash) {
-                        lastException = hash;
-                        exceptionCount = 0;
-                        LOGGER.catching(e);
-                    } else if (exceptionCount < Settings.settings().QUEUE.PARALLEL_THREADS) {
-                        exceptionCount++;
-                        LOGGER.warn(message);
-                    }
-                }
+                if (failure == null) failure = e;
+                else if (failure != e) failure.addSuppressed(e);
             }
         }
+        if (failure instanceof RuntimeException exception) throw exception;
+        if (failure instanceof Error error) throw error;
+        if (failure != null) throw new IllegalStateException("Chunk post-processing failed", failure);
     }
 
     @Override

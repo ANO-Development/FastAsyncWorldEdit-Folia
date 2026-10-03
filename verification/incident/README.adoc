@@ -1,0 +1,35 @@
+= Bulk edit incident regression probe
+
+This destructive test plugin is not included in the release JAR. Never install it on a real server.
+It refuses to run unless the server binds to `127.0.0.1:25708`.
+
+Compile `IncidentProbe.java` with Java 25, the matching Bukkit API, the built FAWE JAR,
+and the paired CoreProtect JAR on the compiler classpath. Package its classes and
+`plugin.yml` into a separate `IncidentProbe.jar`.
+
+Use a disposable Canvas 26.2 build 941 server, four region threads, and a 1536 MiB heap.
+Install the candidate plugins and this probe. Disable external access and use a fresh
+empty test world. Place a copy of the incident schematic at `../500am1.schem`, relative
+to the server directory. The schematic is deliberately not included in this repository.
+
+The probe checks:
+
+* Explicit partial cancellation, completed block counts, retained undo history, and full undo.
+* Matching CoreProtect placement/removal row counts when CoreProtect is installed.
+* Complete schematic paste/undo cycles, comparing every block state with the clipboard
+  (three by default, with a minimum of two via `-Dincident.cycles=2`).
+* Disk-backed edit history.
+
+Run with `-Dincident.stats=true` to inspect the schematic without editing the world.
+`-Dincident.auditCompare=true` compares the last schematic actor's placement coordinates
+with the schematic and prints missing block types. These diagnostic modes are not
+the full acceptance test, even when they exit successfully.
+Use `-Dincident.origin=4096` to select a new, empty paste location after an intentionally
+failed run. The default origin is 2048. Do not reuse a location containing partial edits.
+The cancellation region is `(-16384,128,-16384)` through `(-16321,135,-16321)` and must
+initially be empty. Change its X/Z origin with `-Dincident.cancelOrigin=...` after a failed run.
+
+Success ends with `INCIDENT_PROBE_PASS`. Any `INCIDENT_PROBE_FAIL` is a release blocker.
+The probe shuts down only its disposable server when finished. Its CoreProtect count query
+uses the default table prefix, `co_`. It does not prove arbitrary database engines,
+other plugin integrations, client rendering, or whole-server memory attribution.

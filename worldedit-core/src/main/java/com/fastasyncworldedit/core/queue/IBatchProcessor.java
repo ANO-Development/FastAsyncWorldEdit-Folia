@@ -21,6 +21,20 @@ import java.util.function.Function;
 public interface IBatchProcessor {
 
     /**
+     * Reserve downstream capacity before chunk locks or audit publication. Runs on the same worker as
+     * {@link #processSet}, before the chunk holder and GET call locks are acquired. Implementations may
+     * wait for a bounded interval here, but must not read live region-owned state or publish audit records.
+     * The scope closes after processing and scheduling, not after the world write completes. Transfer
+     * consumed reservations to their downstream owner; close must release only unused capacity.
+     * Tick-thread chunk submissions are rejected before this hook runs.
+     *
+     * @return a non-null scope, closed on both success and failure
+     */
+    default AutoCloseable prepareChunk(IChunk chunk, IChunkSet set) throws Exception {
+        return () -> {};
+    }
+
+    /**
      * Process a chunk that has been set.
      */
     IChunkSet processSet(IChunk chunk, IChunkGet get, IChunkSet set);

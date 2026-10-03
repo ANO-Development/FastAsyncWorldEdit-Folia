@@ -23,6 +23,11 @@ public class BatchProcessorHolder implements IBatchProcessorHolder {
     }
 
     @Override
+    public AutoCloseable prepareChunk(IChunk chunk, IChunkSet set) throws Exception {
+        return getProcessor().prepareChunk(chunk, set);
+    }
+
+    @Override
     public IChunkSet processSet(IChunk chunk, IChunkGet get, IChunkSet set) {
         return getProcessor().processSet(chunk, get, set);
     }

@@ -24,6 +24,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -142,8 +143,7 @@ public class DiskStorageHistory extends FaweStreamChangeSet {
         try {
             close();
         } catch (IOException e) {
-            e.printStackTrace();
-            return;
+            throw new UncheckedIOException("Cannot undo incomplete history", e);
         }
         try (EditSession session = toEditSession(actor, regions)) {
             session.setBlocks(this, ChangeSetExecutor.Type.UNDO);
@@ -158,8 +158,7 @@ public class DiskStorageHistory extends FaweStreamChangeSet {
         try {
             close();
         } catch (IOException e) {
-            e.printStackTrace();
-            return;
+            throw new UncheckedIOException("Cannot redo incomplete history", e);
         }
         EditSession session = toEditSession(actor, regions);
         session.setBlocks(this, ChangeSetExecutor.Type.REDO);
@@ -225,7 +224,7 @@ public class DiskStorageHistory extends FaweStreamChangeSet {
                     osENTCT.flush();
                 }
             } catch (Exception e) {
-                e.printStackTrace();
+                throw new IllegalStateException("Failed to flush undo history", e);
             }
         }
     }
@@ -260,7 +259,7 @@ public class DiskStorageHistory extends FaweStreamChangeSet {
                     osENTCT = null;
                 }
             } catch (Exception e) {
-                e.printStackTrace();
+                throw new IOException("Failed to close undo history", e);
             }
         }
     }

@@ -40,6 +40,7 @@ class SingleThreadQueueExtentFailureTest {
         SingleThreadQueueExtent queue = new SingleThreadQueueExtent();
         IllegalStateException failure = new IllegalStateException("Rejected off-region block read");
         Future<?> finished = mock(Future.class);
+        when(finished.isDone()).thenReturn(true);
         when(finished.get()).thenReturn(null);
         try (MockedStatic<Fawe> fawe = mockStatic(Fawe.class)) {
             fawe.when(Fawe::isMainThread).thenReturn(true);
@@ -98,6 +99,61 @@ class SingleThreadQueueExtentFailureTest {
     }
 
     @Test
+    void heapPressureRefusesUnstartedWriteEvenWithoutBuilderMemoryCheck() throws Exception {
+        SingleThreadQueueExtent queue = new SingleThreadQueueExtent();
+        IQueueChunk<?> chunk = chunk(0, CompletableFuture.completedFuture(null));
+        try (var fawe = mockStatic(Fawe.class);
+                var memory = mockStatic(com.fastasyncworldedit.core.util.MemUtil.class)) {
+            fawe.when(Fawe::isMainThread).thenReturn(true);
+            memory.when(com.fastasyncworldedit.core.util.MemUtil::isMemoryLimited).thenReturn(true);
+            assertThrows(RuntimeException.class, () -> queue.submit(chunk));
+            verify(chunk, never()).call();
+        }
+    }
+
+    @Test
+    void cancellationPreservesAcceptedHistoryProcessor() {
+        SingleThreadQueueExtent queue = new SingleThreadQueueExtent();
+        var history = mock(com.fastasyncworldedit.core.queue.IBatchProcessor.class);
+        queue.setPostProcessor(history);
+        assertTrue(queue.cancel());
+        assertSame(history, queue.getPostProcessor());
+        assertThrows(RuntimeException.class, queue::checkFailure);
+    }
+
+    @Test
+    void acceptedWriteCannotBeCancelledBeforeItsHistoryCompletes() throws Exception {
+        SingleThreadQueueExtent queue = new SingleThreadQueueExtent();
+        CompletableFuture<?> write = new CompletableFuture<>();
+        try (MockedStatic<Fawe> fawe = mockStatic(Fawe.class)) {
+            fawe.when(Fawe::isMainThread).thenReturn(true);
+            Future<?> completion = queue.submit(chunk(0, write));
+            try {
+                assertFalse(completion.cancel(true));
+            } finally {
+                write.complete(null);
+            }
+            assertDoesNotThrow(queue::flush);
+        }
+    }
+
+    @Test
+    void tickThreadCannotWaitForAnAcceptedWrite() throws Exception {
+        SingleThreadQueueExtent queue = new SingleThreadQueueExtent();
+        Future<?> write = mock(Future.class);
+        when(write.get()).thenReturn(null);
+        try (MockedStatic<Fawe> fawe = mockStatic(Fawe.class)) {
+            fawe.when(Fawe::isMainThread).thenReturn(true);
+            queue.submit(chunk(0, write));
+            assertThrows(IllegalStateException.class, queue::flush);
+            verify(write, never()).get();
+            assertFalse(queue.isEmpty());
+            when(write.isDone()).thenReturn(true);
+            assertDoesNotThrow(queue::flush);
+        }
+    }
+
+    @Test
     void cancelledWritesAreNotReportedAsSuccessful() throws Exception {
         SingleThreadQueueExtent queue = new SingleThreadQueueExtent();
         CompletableFuture<?> cancelled = new CompletableFuture<>();
@@ -108,6 +164,27 @@ class SingleThreadQueueExtentFailureTest {
 
             assertInstanceOf(java.util.concurrent.CancellationException.class,
                     assertThrows(RuntimeException.class, queue::flush).getCause());
+        }
+    }
+
+    @Test
+    void failureStopsUnsubmittedChunksWithoutDiscardingAcceptedFutures() throws Exception {
+        SingleThreadQueueExtent queue = new SingleThreadQueueExtent();
+        IllegalStateException failure = new IllegalStateException("Audit capacity unavailable");
+        IQueueChunk<?> rejected = chunk(0, null);
+        when(rejected.call()).thenThrow(failure);
+        IQueueChunk<?> unstarted = chunk(1, CompletableFuture.completedFuture(null));
+        Field field = SingleThreadQueueExtent.class.getDeclaredField("chunks");
+        field.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        var chunks = (Long2ObjectLinkedOpenHashMap<IQueueChunk<?>>) field.get(queue);
+        chunks.put(0, rejected);
+        chunks.put(1, unstarted);
+        try (MockedStatic<Fawe> fawe = mockStatic(Fawe.class)) {
+            fawe.when(Fawe::isMainThread).thenReturn(true);
+            assertSame(failure, assertThrows(RuntimeException.class, queue::flush).getCause());
+            verify(unstarted, never()).call();
+            assertTrue(queue.isEmpty());
         }
     }
 

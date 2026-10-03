@@ -595,6 +595,9 @@ public class Settings extends Config {
         })
         public int TARGET_SIZE = 8 * Runtime.getRuntime().availableProcessors();
 
+        @Comment("Maximum worker wait for chunk queue capacity in milliseconds. Tick threads never wait.")
+        public long ADMISSION_TIMEOUT_MS = 30000;
+
         @Comment({
                 "Increase or decrease queue intensity (ms) [-50,50]:",
                 "    0 = balance of performance / stability",

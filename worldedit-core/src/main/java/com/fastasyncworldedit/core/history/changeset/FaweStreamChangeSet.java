@@ -29,6 +29,7 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.UncheckedIOException;
 import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Collections;
@@ -368,7 +369,7 @@ public abstract class FaweStreamChangeSet extends AbstractChangeSet {
             posDel.write(stream, x - originX, y, z - originZ);
             idDel.writeChange(stream, combinedFrom, combinedTo);
         } catch (IOException e) {
-            e.printStackTrace();
+            throw new UncheckedIOException("Failed to write block undo history", e);
         }
     }
 
@@ -394,7 +395,7 @@ public abstract class FaweStreamChangeSet extends AbstractChangeSet {
             os.writeVarInt(from.getInternalId());
             os.writeVarInt(to.getInternalId());
         } catch (IOException e) {
-            e.printStackTrace();
+            throw new UncheckedIOException("Failed to write biome undo history", e);
         }
     }
 
@@ -405,7 +406,7 @@ public abstract class FaweStreamChangeSet extends AbstractChangeSet {
             NBTOutputStream nbtos = getTileCreateOS();
             nbtos.writeTag(new CompoundTag(tag.linTag()));
         } catch (IOException e) {
-            e.printStackTrace();
+            throw new UncheckedIOException("Failed to write block entity creation history", e);
         }
     }
 
@@ -416,7 +417,7 @@ public abstract class FaweStreamChangeSet extends AbstractChangeSet {
             NBTOutputStream nbtos = getTileRemoveOS();
             nbtos.writeTag(new CompoundTag(tag.linTag()));
         } catch (IOException e) {
-            e.printStackTrace();
+            throw new UncheckedIOException("Failed to write block entity removal history", e);
         }
     }
 
@@ -427,7 +428,7 @@ public abstract class FaweStreamChangeSet extends AbstractChangeSet {
             NBTOutputStream nbtos = getEntityRemoveOS();
             nbtos.writeTag(new CompoundTag(tag.linTag()));
         } catch (IOException e) {
-            e.printStackTrace();
+            throw new UncheckedIOException("Failed to write entity removal history", e);
         }
     }
 
@@ -438,7 +439,7 @@ public abstract class FaweStreamChangeSet extends AbstractChangeSet {
             NBTOutputStream nbtos = getEntityCreateOS();
             nbtos.writeTag(new CompoundTag(tag.linTag()));
         } catch (IOException e) {
-            e.printStackTrace();
+            throw new UncheckedIOException("Failed to write entity creation history", e);
         }
     }
 

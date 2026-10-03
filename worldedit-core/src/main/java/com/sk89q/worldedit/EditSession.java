@@ -1170,7 +1170,7 @@ public class EditSession extends PassthroughExtent implements AutoCloseable {
                 editSession.getBlockBag(),
                 editSession.getLimit().INVENTORY_MODE
         ));
-        flushQueue();
+        editSession.flushQueue();
         editSession.changes = 1;
     }
 
@@ -1202,7 +1202,7 @@ public class EditSession extends PassthroughExtent implements AutoCloseable {
                 editSession.getBlockBag(),
                 editSession.getLimit().INVENTORY_MODE
         ));
-        flushQueue();
+        editSession.flushQueue();
         editSession.changes = 1;
     }
     //FAWE end
@@ -1397,14 +1397,10 @@ public class EditSession extends PassthroughExtent implements AutoCloseable {
         }
         // Enqueue it
         if (getChangeSet() != null) {
-            if (Settings.settings().HISTORY.COMBINE_STAGES) {
-                ((AbstractChangeSet) getChangeSet()).closeAsync();
-            } else {
-                try {
-                    getChangeSet().close();
-                } catch (IOException e) {
-                    throw new RuntimeException(e);
-                }
+            try {
+                getChangeSet().close();
+            } catch (IOException e) {
+                throw new RuntimeException(e);
             }
         }
     }

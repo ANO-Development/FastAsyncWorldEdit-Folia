@@ -49,7 +49,8 @@ import java.util.Map.Entry;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
-import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -645,7 +646,7 @@ public enum FaweCache implements Trimable {
      */
     public ThreadPoolExecutor newBlockingExecutor(String name, Logger logger) {
         int nThreads = Settings.settings().QUEUE.PARALLEL_THREADS;
-        LinkedBlockingQueue<Runnable> queue = new LinkedBlockingQueue<>();
+        ArrayBlockingQueue<Runnable> queue = new ArrayBlockingQueue<>(Math.max(1, Settings.settings().QUEUE.TARGET_SIZE));
         return new ThreadPoolExecutor(
                 nThreads,
                 nThreads,
@@ -653,7 +654,23 @@ public enum FaweCache implements Trimable {
                 TimeUnit.MILLISECONDS,
                 queue,
                 new FaweBasicThreadFactory(name),
-                new ThreadPoolExecutor.CallerRunsPolicy()
+                (task, executor) -> {
+                    if (executor.isShutdown() || Fawe.isMainThread()) {
+                        throw new RejectedExecutionException("Chunk queue is full or unavailable; tick threads cannot wait");
+                    }
+                    try {
+                        long timeout = Math.max(0, Settings.settings().QUEUE.ADMISSION_TIMEOUT_MS);
+                        if (!executor.getQueue().offer(task, timeout, TimeUnit.MILLISECONDS)) {
+                            throw new RejectedExecutionException("Timed out waiting for chunk queue capacity");
+                        }
+                        if (executor.isShutdown() && executor.remove(task)) {
+                            throw new RejectedExecutionException("Chunk executor stopped during admission");
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new RejectedExecutionException("Interrupted waiting for chunk queue capacity", interrupted);
+                    }
+                }
         ) {
 
             // Array for lazy avoidance of concurrent modification exceptions and needless overcomplication of code (synchronisation is

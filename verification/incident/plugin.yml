@@ -1,0 +1,7 @@
+name: IncidentProbe
+version: 1
+main: IncidentProbe
+api-version: '26.2'
+folia-supported: true
+depend: [FastAsyncWorldEdit]
+softdepend: [CoreProtect]

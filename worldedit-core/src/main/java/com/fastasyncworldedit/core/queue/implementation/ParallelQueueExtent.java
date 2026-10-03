@@ -2,7 +2,6 @@ package com.fastasyncworldedit.core.queue.implementation;
 
 import com.fastasyncworldedit.core.FaweCache;
 import com.fastasyncworldedit.core.configuration.Settings;
-import com.fastasyncworldedit.core.extent.NullExtent;
 import com.fastasyncworldedit.core.extent.PassthroughExtent;
 import com.fastasyncworldedit.core.extent.clipboard.WorldCopyClipboard;
 import com.fastasyncworldedit.core.extent.filter.CountFilter;
@@ -46,6 +45,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ForkJoinTask;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class ParallelQueueExtent extends PassthroughExtent {
 
@@ -59,6 +59,7 @@ public class ParallelQueueExtent extends PassthroughExtent {
     private final boolean fastmode;
     private final SideEffectSet sideEffectSet;
     private int changes;
+    private final AtomicReference<Throwable> failure = new AtomicReference<>();
 
     public ParallelQueueExtent(QueueHandler handler, World world, boolean fastmode, @Nullable SideEffectSet sideEffectSet) {
         super(handler.getQueue(world, new BatchProcessorHolder(), new BatchProcessorHolder()));
@@ -74,6 +75,7 @@ public class ParallelQueueExtent extends PassthroughExtent {
         }
         this.fastmode = fastmode;
         this.sideEffectSet = sideEffectSet == null ? SideEffectSet.defaults() : sideEffectSet;
+        ((SingleThreadQueueExtent) this.extent).setFailureState(failure);
     }
 
     /**
@@ -112,12 +114,16 @@ public class ParallelQueueExtent extends PassthroughExtent {
 
     @Override
     public boolean cancel() {
-        if (super.cancel()) {
-            processor.setProcessor(new NullExtent(this, FaweCache.MANUAL));
-            postProcessor.setPostProcessor(new NullExtent(this, FaweCache.MANUAL));
-            return true;
-        }
-        return false;
+        failure.compareAndSet(null, FaweCache.MANUAL);
+        return true;
+    }
+
+    boolean hasFailed() {
+        return failure.get() != null;
+    }
+
+    void recordFailure(Throwable cause) {
+        ((SingleThreadQueueExtent) super.getExtent()).recordFailure(cause);
     }
 
     @SuppressWarnings("rawtypes")
@@ -126,6 +132,7 @@ public class ParallelQueueExtent extends PassthroughExtent {
         queue.setFastMode(fastmode);
         queue.setSideEffectSet(sideEffectSet);
         queue.setFaweExceptionArray(faweExceptionReasonsUsed);
+        queue.setFailureState(failure);
         queue.setTargetSize(Settings.settings().QUEUE.TARGET_SIZE * Settings.settings().QUEUE.THREAD_TARGET_SIZE_PERCENT / 100);
         return queue;
     }
@@ -150,7 +157,7 @@ public class ParallelQueueExtent extends PassthroughExtent {
             filter.finish();
         } else {
             ForkJoinTask<?> task = this.handler.submit(
-                    new ApplyTask<>(region, filter, this, full, this.faweExceptionReasonsUsed)
+                    new ApplyTask<>(region, filter, this, full)
             );
             // wait for task to finish
             try {

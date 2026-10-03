@@ -10,8 +10,8 @@ plugins {
     id("xyz.jpenilla.run-paper") version "3.1.0"
 }
 
-val rootVersion: String = (extra.properties["rootVersion"] as? String) ?: "2.15.5"
-val snapshot: String = (extra.properties["snapshot"] as? String) ?: "folia.8"
+val rootVersion: String = (extra.properties["rootVersion"] as? String) ?: "26.10.0"
+val snapshot: String = (extra.properties["snapshot"] as? String) ?: ""
 var revision: String = (extra.properties["revision"] as? String) ?: ""
 var buildNumber: String = (extra.properties["buildNumber"] as? String) ?: ""
 var date: String = (extra.properties["date"] as? String) ?: ""
@@ -40,7 +40,7 @@ extra.set("revision", revision)
 extra.set("buildNumber", buildNumber)
 extra.set("date", date)
 
-version = String.format("%s-%s", rootVersion, snapshot)
+version = if (snapshot.isBlank()) rootVersion else "$rootVersion-$snapshot"
 
 if (!project.hasProperty("gitCommitHash")) {
     ext["gitCommitHash"] = try {

@@ -104,13 +104,11 @@ public abstract class AbstractBukkitGetBlocks<ServerLevel, LevelChunk> extends C
         // Submit via the STQE as that will help handle excessive queuing by waiting for the submission count to fall below the
         // target size
         final Extent extent = FaweThreadUtil.getCurrentExtent();
-        nmsChunkFuture.thenApply(nmsChunk -> owner.submitTaskUnchecked(() -> (T) callOnOwnerThread(
+        CompletableFuture<?> completion = nmsChunkFuture.thenApply(nmsChunk -> owner.submitTaskUnchecked(() -> (T) callOnOwnerThread(
                 () -> tryWrappedInternalCall(set, finalizer, finalCopyKey, nmsChunk, nmsWorld, extent)
         )));
-        // If we have re-submitted, return a completed future to prevent potential deadlocks where a future reliant on the
-        // above submission is halting the BlockingExecutor, and preventing the above task from actually running. The futures
-        // submitted above will still be added to the STQE submissions.
-        return (T) (Future) CompletableFuture.completedFuture(null);
+        // The caller follows the nested future off the chunk executor, so failed loads and admission remain observable.
+        return (T) completion;
     }
 
     private <T extends Future<T>> T tryWrappedInternalCall(
@@ -138,9 +136,10 @@ public abstract class AbstractBukkitGetBlocks<ServerLevel, LevelChunk> extends C
     ) {
         try {
             return internalCall(set, finalizer, copyKey, nmsChunk, nmsWorld);
-        } catch (Throwable e) {
-            LOGGER.error("Error performing chunk call at chunk {},{}", chunkX, chunkZ, e);
-            return null;
+        } catch (RuntimeException | Error failure) {
+            throw failure;
+        } catch (Exception failure) {
+            throw new IllegalStateException("Error performing chunk call at " + chunkX + "," + chunkZ, failure);
         } finally {
             forceLoadSections = true;
         }
@@ -198,6 +197,9 @@ public abstract class AbstractBukkitGetBlocks<ServerLevel, LevelChunk> extends C
             //noinspection unchecked - required at compile time
             return (T) (Future) queueHandler.sync(chain);
         } else {
+            if (isOwnerThread() && (callback != null || finalizer != null)) {
+                return (T) (Future) Fawe.instance().getQueueHandler().async(callback != null ? callback : finalizer, null);
+            }
             if (callback != null) {
                 callback.run();
             } else if (finalizer != null) {

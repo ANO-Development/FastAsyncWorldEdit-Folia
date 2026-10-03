@@ -1,5 +1,6 @@
 package com.fastasyncworldedit.core.queue.implementation.chunk;
 
+import com.fastasyncworldedit.core.Fawe;
 import com.fastasyncworldedit.core.extent.filter.block.ChunkFilterBlock;
 import com.fastasyncworldedit.core.extent.processor.EmptyBatchProcessor;
 import com.fastasyncworldedit.core.extent.processor.heightmap.HeightMapType;
@@ -1045,17 +1046,13 @@ public class ChunkHolder<T extends Future<T>> implements IQueueChunk<T> {
     }
 
     @Override
-    public synchronized T call() {
-        if (chunkSet != null && !chunkSet.isEmpty()) {
-            IChunkSet copy = chunkSet.createCopy();
-
-            return this.call(
-                    extent, copy, () -> {
-                        // Do nothing
-                    }
-            );
+    public T call() {
+        IChunkSet copy;
+        synchronized (this) {
+            if (chunkSet == null || chunkSet.isEmpty()) return null;
+            copy = chunkSet.createCopy();
         }
-        return null;
+        return this.call(extent, copy, () -> {});
     }
 
     /**
@@ -1064,7 +1061,11 @@ public class ChunkHolder<T extends Future<T>> implements IQueueChunk<T> {
 
     @Override
     public <U extends Future<U>> U call(IQueueExtent<?> owner, IChunkSet set, Runnable finalize) {
-        if (set != null) {
+        if (set == null) return null;
+        if (Fawe.isMainThread()) {
+            throw new IllegalStateException("Chunk edits must be submitted from a worker thread");
+        }
+        try (AutoCloseable admission = owner.getProcessor().prepareChunk(this, set)) {
             if (parentWrapper != null) {
                 if (!parentWrapper.invalidate(this)) {
                     throw new IllegalStateException("Existing chunk not equal to expected");
@@ -1087,13 +1088,17 @@ public class ChunkHolder<T extends Future<T>> implements IQueueChunk<T> {
                 } else {
                     finalizer = finalize;
                 }
-                return get.call(extent, set, finalizer);
+                if (iChunkSet == null) return null;
+                return get.call(extent, iChunkSet, finalizer);
             } finally {
                 get.unlockCall();
                 untrackExtent();
             }
+        } catch (RuntimeException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw new IllegalStateException("Chunk admission failed", exception);
         }
-        return null;
     }
 
     // "call" can be called by QueueHandler#blockingExecutor. In such case, we still want the other thread
