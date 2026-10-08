@@ -782,21 +782,19 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
             if (bitMask == 0 && biomes == null && !lightUpdate) {
                 callback = null;
             } else {
-                int finalMask = bitMask != 0 ? bitMask : lightUpdate ? set.getBitMask() : 0;
                 syncTasks.add(() -> {
                     // Set Modified
                     nmsChunk.setLightCorrect(true);
                     nmsChunk.mustNotSave = false;
                 });
                 callback = () -> {
-                    // send to player
-                    if (!set
-                            .getSideEffectSet()
-                            .shouldApply(SideEffect.LIGHTING) || !Settings.settings().LIGHTING.DELAY_PACKET_SENDING || finalMask == 0 && biomes != null) {
+                    // Admission can pause later chunks; publish completed terrain before the final lighting pass.
+                    try {
                         this.send();
-                    }
-                    if (finalizer != null) {
-                        finalizer.run();
+                    } finally {
+                        if (finalizer != null) {
+                            finalizer.run();
+                        }
                     }
                 };
             }

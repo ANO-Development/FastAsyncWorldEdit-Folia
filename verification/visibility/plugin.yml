@@ -1,0 +1,6 @@
+name: VisibilityProbe
+version: 1
+main: VisibilityProbe
+api-version: '26.2'
+folia-supported: true
+depend: [FastAsyncWorldEdit]

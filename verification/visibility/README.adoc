@@ -1,0 +1,41 @@
+= Connected-client chunk visibility regression
+
+This destructive fixture is not part of the release JAR. Use a disposable Canvas
+26.2 build 941 server on `127.0.0.1:25708`, Java 25, an empty superflat world and four
+region threads. Never install it on production. It shuts down only its guarded test
+server after the probe completes.
+
+Compile `VisibilityProbe.java` against the Bukkit API and candidate FAWE JAR, then
+package the classes with `plugin.yml` in a separate `VisibilityProbe.jar`. Use the
+Minecraft 26.2 protocol client dependencies documented in CoreProtect's
+`src/test/clients/README.md`: minecraft-protocol 1.68.0 and the 26.2 minecraft-data
+dataset at `4dd8762a45b97dafdb216b8d7a95ab92379e2c68`.
+
+Set `NODE_PATH` to that disposable dependency directory and run `node client.cjs`
+after the server is ready. The client only connects to the loopback fixture. Its
+decoder follows the Minecraft 26.2 chunk-section encoding, including fluid counts
+and fixed-size packed arrays. It checks all 4,096 block states in the target section,
+not merely that a chunk packet arrived.
+
+The probe places two full diamond-block sections. It holds the second chunk's
+admission until the client acknowledges seeing the first. This proves that completed
+terrain is delivered while the edit remains in progress, even when delayed lighting
+packets are enabled. Both chunks must reach the client without reconnecting.
+
+Run with `-Dvisibility.origin=4096` and `VISIBILITY_CHUNK=256` for a new empty location.
+The origin must be chunk-aligned; use a different origin after a failed run because
+the failed edit can leave its first chunk in the fixture. The default origin is 2048
+and client chunk 128. A pre-existing diamond section can invalidate the test.
+
+Expected results:
+
+* FAWE 26.10.1: timeout awaiting the first visible chunk, followed by `VISIBILITY_PROBE_FAIL`.
+* Fixed build: client prints `CLIENT_VISIBLE first` and `CLIENT_VISIBLE second`;
+  server prints `VISIBLE_BEFORE_EDIT_COMPLETION` and `VISIBILITY_PROBE_PASS`.
+
+The check passed both without CoreProtect and with the deployed CoreProtect 26.10.1
+JAR (`e92c09f153cd0b42dd9e33453a1157a3a62a5e0a46fdb8c91227edd43c3856ce`).
+The paired shutdown reported no unsafe captures and no queued recovery bytes.
+Use the separate incident probe for full schematic state, undo and exact audit-count
+validation. This fixture does not validate third-party packet filters or rendered
+lighting on a graphical client.

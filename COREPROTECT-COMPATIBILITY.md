@@ -1,5 +1,19 @@
 # CoreProtect integration on Canvas 26.2
 
+## 26.10.2 live chunk updates
+
+The 26.2 adapter sends completed terrain to connected viewers while the rest of an
+edit is still running or awaiting audit admission. With delayed lighting packets
+enabled, the existing final relighting pass still sends corrected lighting afterward.
+This avoids hiding applied terrain until the whole edit finishes. History finalization
+still runs if scheduling a terrain update fails.
+
+The connected-client regression in `verification/visibility` failed on 26.10.1 and
+passed with this change, both without CoreProtect and with CoreProtect 26.10.1. It
+decodes actual received block states and requires the first chunk to be visible before
+the next chunk can proceed. Audit admission, queue bounds and logout cancellation are
+unchanged. Leaving the server during an unfinished edit still cancels remaining work.
+
 ## 26.10.1 paste traversal
 
 Ordinary cuboid clipboard pastes finish one destination chunk at a time, including
@@ -9,9 +23,9 @@ for successive horizontal layers when the clipboard footprint exceeds queue capa
 The 26.10.0 queue, cancellation, history, and CoreProtect admission contracts remain
 unchanged. CoreProtect 26.10.0 is compatible; no companion update is required.
 
-Disconnecting still cancels unfinished player edits. Chunk visibility follows the
-configured relighting/packet policy; players must wait for command completion rather
-than reconnecting to try to finish an edit. See `verification/paste-20261007.adoc`.
+Disconnecting still cancels unfinished player edits. Players must wait for command
+completion rather than reconnecting to try to finish an edit. See
+`verification/paste-20261007.adoc` for the original traversal investigation.
 
 ## 26.10.0 admission and completion contract
 
@@ -96,4 +110,4 @@ Build and run the relevant Gradle checks with JDK 25:
 .\gradlew.bat :worldedit-core:test :worldedit-bukkit:test :worldedit-bukkit:adapters:adapter-26.2:test :worldedit-bukkit:shadowJar
 ```
 
-The current Canvas artifact is `worldedit-bukkit/build/libs/FastAsyncWorldEdit-Paper-26.10.1.jar`.
+The current Canvas artifact is `worldedit-bukkit/build/libs/FastAsyncWorldEdit-Paper-26.10.2.jar`.

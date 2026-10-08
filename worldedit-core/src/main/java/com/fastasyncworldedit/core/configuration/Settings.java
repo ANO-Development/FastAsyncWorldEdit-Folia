@@ -841,7 +841,8 @@ public class Settings extends Config {
     public static class LIGHTING {
 
         @Comment({
-                "If packet sending should be delayed until relight is finished",
+                "If final chunk packets should be sent after relight is finished",
+                "Folia 26.2 also sends completed terrain immediately, before relighting.",
         })
         public boolean DELAY_PACKET_SENDING = true;
         public boolean ASYNC = true;
