@@ -59,7 +59,7 @@ includeBuild("build-logic")
 
 include("worldedit-libs")
 
-val supportedAdapterVersions = listOf("1_21", "1_21_4", "1_21_5", "1_21_6", "1_21_9", "1_21_11", "26.1", "26.2")
+val supportedAdapterVersions = listOf("1_21", "1_21_4", "1_21_5", "1_21_6", "1_21_9", "1_21_11", "26.1", "26.2", "26.3")
 val adapterVersions = if (providers.gradleProperty("fawe.foliaTarget").orNull.toBoolean()) {
     listOf("26.2")
 } else {

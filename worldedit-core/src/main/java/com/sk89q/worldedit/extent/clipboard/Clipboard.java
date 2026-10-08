@@ -27,6 +27,7 @@ import com.fastasyncworldedit.core.extent.clipboard.ReadOnlyClipboard;
 import com.fastasyncworldedit.core.function.visitor.Order;
 import com.fastasyncworldedit.core.queue.Filter;
 import com.fastasyncworldedit.core.util.MaskTraverser;
+import com.google.common.collect.Iterators;
 import com.sk89q.worldedit.EditSession;
 import com.sk89q.worldedit.EditSessionBuilder;
 import com.sk89q.worldedit.WorldEdit;
@@ -44,6 +45,7 @@ import com.sk89q.worldedit.math.BlockVector2;
 import com.sk89q.worldedit.internal.util.ClipboardTransformBaker;
 import com.sk89q.worldedit.math.BlockVector3;
 import com.sk89q.worldedit.math.transform.Transform;
+import com.sk89q.worldedit.regions.CuboidRegion;
 import com.sk89q.worldedit.regions.Region;
 import com.sk89q.worldedit.regions.Regions;
 import com.sk89q.worldedit.util.Location;
@@ -404,7 +406,9 @@ public interface Clipboard extends Extent, Iterable<BlockVector3>, Closeable, Fl
 
         pasteBiomes &= Clipboard.this.hasBiomes();
 
-        for (BlockVector3 pos : this) {
+        Iterator<BlockVector3> positions = pasteIterator(BlockVector3.at(relx, rely, relz));
+        while (positions.hasNext()) {
+            BlockVector3 pos = positions.next();
             BaseBlock block = pos.getFullBlock(this);
             int xx = pos.x() + relx;
             int yy = pos.y() + rely;
@@ -440,6 +444,26 @@ public interface Clipboard extends Extent, Iterable<BlockVector3>, Closeable, Fl
         if (close) {
             ((EditSession) extent).close();
         }
+    }
+
+    private Iterator<BlockVector3> pasteIterator(BlockVector3 offset) {
+        Region source = getRegion();
+        if (!(source instanceof CuboidRegion)) {
+            return iterator();
+        }
+        BlockVector3 minimum = source.getMinimumPoint().add(offset);
+        BlockVector3 maximum = source.getMaximumPoint().add(offset);
+        CuboidRegion target = new CuboidRegion(null, minimum, maximum, false);
+        // Finish destination chunks before bounded queues evict them, regardless of clipboard storage order.
+        return Iterators.concat(Iterators.transform(target.getChunks().iterator(), chunk -> {
+            BlockVector3 chunkMinimum = BlockVector3.at(
+                    Math.max(minimum.x(), chunk.x() << 4), minimum.y(), Math.max(minimum.z(), chunk.z() << 4)
+            ).subtract(offset);
+            BlockVector3 chunkMaximum = BlockVector3.at(
+                    Math.min(maximum.x(), (chunk.x() << 4) + 15), maximum.y(), Math.min(maximum.z(), (chunk.z() << 4) + 15)
+            ).subtract(offset);
+            return new CuboidRegion(null, chunkMinimum, chunkMaximum, false).iterator_old();
+        }));
     }
     //FAWE end
 }

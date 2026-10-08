@@ -1,5 +1,18 @@
 # CoreProtect integration on Canvas 26.2
 
+## 26.10.1 paste traversal
+
+Ordinary cuboid clipboard pastes finish one destination chunk at a time, including
+offset and negative destinations. Disk clipboard storage keeps its linear iteration
+format; only paste traversal changes. This avoids repeatedly flushing the same chunk
+for successive horizontal layers when the clipboard footprint exceeds queue capacity.
+The 26.10.0 queue, cancellation, history, and CoreProtect admission contracts remain
+unchanged. CoreProtect 26.10.0 is compatible; no companion update is required.
+
+Disconnecting still cancels unfinished player edits. Chunk visibility follows the
+configured relighting/packet policy; players must wait for command completion rather
+than reconnecting to try to finish an edit. See `verification/paste-20261007.adoc`.
+
 ## 26.10.0 admission and completion contract
 
 Use FAWE 26.10.0 with the matching CoreProtect 26.10.0 fork. Replacing only FAWE does
@@ -83,4 +96,4 @@ Build and run the relevant Gradle checks with JDK 25:
 .\gradlew.bat :worldedit-core:test :worldedit-bukkit:test :worldedit-bukkit:adapters:adapter-26.2:test :worldedit-bukkit:shadowJar
 ```
 
-The current Canvas artifact is `worldedit-bukkit/build/libs/FastAsyncWorldEdit-Paper-26.10.0.jar`.
+The current Canvas artifact is `worldedit-bukkit/build/libs/FastAsyncWorldEdit-Paper-26.10.1.jar`.

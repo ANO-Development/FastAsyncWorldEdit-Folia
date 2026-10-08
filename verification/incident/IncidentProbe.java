@@ -39,7 +39,7 @@ public final class IncidentProbe extends JavaPlugin {
             Bukkit.getAsyncScheduler().runNow(this, ignored -> {
                 try {
                     Settings.settings().QUEUE.PARALLEL_THREADS = 4;
-                    Settings.settings().QUEUE.TARGET_SIZE = 16;
+                    Settings.settings().QUEUE.TARGET_SIZE = Integer.getInteger("incident.targetSize", 16);
                     Settings.settings().QUEUE.PRELOAD_CHUNK_COUNT = 0;
                     if (!Boolean.getBoolean("incident.stats") && !Boolean.getBoolean("incident.auditCompare")) verifyCancellation();
                     verifySchematic();
@@ -195,7 +195,7 @@ public final class IncidentProbe extends JavaPlugin {
             return;
         }
         int origin = Integer.getInteger("incident.origin", 2048);
-        BlockVector3 minimum = BlockVector3.at(origin, 96, origin);
+        BlockVector3 minimum = BlockVector3.at(origin, 96, Integer.getInteger("incident.originZ", origin));
         BlockVector3 maximum = minimum.add(clipboard.getDimensions()).subtract(1, 1, 1);
         if (maximum.y() >= world.getMaxHeight()) throw new AssertionError("Schematic exceeds fixture height");
         var target = new CuboidRegion(minimum, maximum);
@@ -203,7 +203,30 @@ public final class IncidentProbe extends JavaPlugin {
         try (var holder = new ClipboardHolder(clipboard)) {
             for (int cycle = 0; cycle < Math.max(2, Integer.getInteger("incident.cycles", 3)); cycle++) {
                 EditSession paste = edit();
-                try (paste) { Operations.complete(holder.createPaste(paste).to(destination).build()); }
+                var preparedChunks = java.util.concurrent.ConcurrentHashMap.<Long>newKeySet();
+                var preparations = new AtomicInteger();
+                paste.addProcessor(new BatchProcessorHolder() {
+                    @Override
+                    public AutoCloseable prepareChunk(IChunk chunk, IChunkSet set) {
+                        preparations.incrementAndGet();
+                        long key = ((long) chunk.getX() << 32) | (chunk.getZ() & 0xffffffffL);
+                        if (!preparedChunks.add(key) && Boolean.getBoolean("incident.chunkLocal")) {
+                            throw new IllegalStateException("Paste revisited destination chunk " + chunk.getX() + "," + chunk.getZ());
+                        }
+                        return () -> {};
+                    }
+                });
+                long started = System.nanoTime();
+                try (paste) {
+                    if (Boolean.getBoolean("incident.directPaste")) {
+                        clipboard.paste(paste, destination, true, false, false);
+                    } else {
+                        Operations.complete(holder.createPaste(paste).to(destination).build());
+                    }
+                }
+                getLogger().info("PASTE_COMPLETED direct=" + Boolean.getBoolean("incident.directPaste")
+                        + " milliseconds=" + java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
+                        + " preparations=" + preparations.get() + " uniqueChunks=" + preparedChunks.size());
                 verifyBlocks(clipboard, target, false);
                 awaitAudit(nonAir * (cycle * 2L + 1));
                 try (EditSession undo = edit()) { paste.undo(undo); }

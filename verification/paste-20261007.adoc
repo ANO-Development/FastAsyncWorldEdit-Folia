@@ -1,0 +1,122 @@
+= October 7 paste investigation
+
+== Upstream integration
+
+The local Folia merge incorporates upstream `62e6223804be994d80abf82d098df0068acc8005`
+(15 commits beyond the previous upstream base). It retains the Folia 26.2 dev bundle,
+Java 25, bounded queues, per-edit ownership, and the CoreProtect admission contract.
+The upstream 26.3 sources remain in the repository but are excluded from the Folia
+build. No workflow was added or changed.
+
+Gradle 9.8.0 passed 241 core/Bukkit tests with no failures or skips. The 26.2 adapter
+compiled; its module has no standalone tests. Artifact inspection found only the
+26.2 adapter, class-file version 69, API 26.2, and `folia-supported: true`.
+
+The upstream-only baseline artifact was `FastAsyncWorldEdit-Paper-26.10.1-SNAPSHOT.jar`, SHA-256
+`36ff6399f060f771a1e2d0c27053e8c2fa7fba5df444eba8f4033e574a999966`.
+Its embedded Git revision was the pre-merge HEAD, not a committed release revision.
+That baseline did not include the traversal fix described below.
+
+== Production observations
+
+Read-only checks confirmed Canvas 26.2 build 941, FAWE `26.10.0+f736054`, and
+CoreProtect `26.10.0`. Both deployed JAR hashes matched the previous release.
+The paste at 21:52:26 was followed by disconnect at 21:54:52 and manual-cancellation
+errors. `Player.unregister()` calls `cancel(true)`: reconnecting cancels unfinished
+work rather than completing it.
+
+Production has `lighting.delay-packet-sending: true`. The adapter suppresses ordinary
+chunk resends until relighting, which is started after queue completion. A client can
+therefore see an outdated view while the server has already applied some chunks.
+This is consistent with more blocks becoming visible on reconnect; the screenshot
+alone cannot distinguish every stale client block from an unapplied server block.
+
+QuickShop 6.3.0.2 was disabled at 13:06:41 and 6.3.0.3 enabled at 13:06:45. Subsequent
+FAWE edit-session events still invoked an old QuickShop handler that threw
+`IllegalStateException: zip file closed`. This is a separate integration/lifecycle
+fault; its contribution to elapsed paste time was not measured.
+
+== Controlled baseline
+
+The copied BikiniBottom schematic has dimensions 245 x 54 x 215 and 316,806 non-air
+blocks. Its SHA-256 is `aa6e741e9f09ea14c41d66817dce09de8b49ca896014505319215bab7c40639e`.
+The fixture used Canvas 941, Java 25.0.1 on Windows, four region threads, a 1536 MiB
+heap, disk history, and embedded DuckDB. Production uses Linux/Java 25.0.4.1/MySQL.
+
+The existing incident probe uses `ClipboardHolder.createPaste`, not the untransformed
+command's optimized `Clipboard.paste` path. Its checks are valuable for integration
+and world-state correctness but do not reproduce the exact reported command path.
+
+[cols="2,1,1",options="header"]
+|===
+|Pair |Two paste/undo cycles, including verification |Result
+|Deployed FAWE and CoreProtect |183 seconds |Every block matched; 1,267,224 audit rows
+|Deployed FAWE without CoreProtect, test only |115 seconds |Every block matched
+|Upstream-merged FAWE and deployed CoreProtect |186 seconds |Every block matched; 1,267,224 audit rows
+|===
+
+Each run also passed explicit partial cancellation and undo of 8,192 blocks. Paired
+runs checked 8,192 placement records and 16,384 records after undo. These elapsed
+times include sequential region-owned verification reads and audit drainage; they
+are not pure placement benchmarks. The later runs reused the disposable world.
+
+A paired-run thread snapshot observed workers awaiting CoreProtect admission; the
+test without CoreProtect observed workers awaiting Folia-owned work. Neither proves
+which stage dominated the reported production attempt. No production edits, plugin
+replacement, reload, or restart were performed.
+
+== Ordinary paste traversal
+
+`ClipboardCommands.paste` routes untransformed, unmasked pastes through `place`,
+which calls `Clipboard.paste`. That method iterates the clipboard directly.
+`DiskOptimizedClipboard` inherits `LinearClipboard.iterator`, which selects YZX
+order: a horizontal layer is traversed before proceeding upward.
+
+`SingleThreadQueueExtent` now spills its oldest pending chunk when its bounded
+capacity is reached. If a layer spans more chunks than that capacity, the next
+layer revisits chunks already submitted. Each revisit repeats admission, scheduling,
+native-write and history work. Increasing capacity would conceal this interaction
+by retaining more chunks; it is not the proposed repair.
+
+A FIFO simulation of the source traversal with these dimensions and production's
+48-chunk capacity produces 12,096 submissions for an aligned 224-chunk footprint,
+versus 224 for complete destination-chunk traversal. This is an algorithmic count,
+not a measured native submission count or a promised 54-fold speed improvement.
+Destination offsets can change the footprint.
+
+== 26.10.1 traversal fix
+
+Ordinary cuboid paste traversal now partitions the destination footprint into chunks
+and translates each intersection back into source clipboard coordinates. Each chunk
+is completed before the next is visited. The iterator is lazy and does not accumulate
+the clipboard in memory. Non-cuboid clipboards retain their original membership and
+iteration; clipboard storage order and transformed paste logic are unchanged.
+
+Four offset/aligned traversal cases failed against the original implementation and
+passed after the change. Additional tests cover source payload identity, air filtering,
+biomes, entity offsets and flags, non-cuboid membership, and cancellation propagation.
+The full build passed 250 core/Bukkit tests.
+
+The native probe now supports the ordinary command's direct `Clipboard.paste` path.
+Against the deployed 26.10.0 JAR, its guard detected a repeated destination chunk and
+failed before completing the paste. Against the fixed candidate, with a four-chunk
+queue and destination minimum `(28673,96,-28675)`, both pastes prepared exactly 240
+distinct chunks without revisits. Paste execution, including queue/history completion
+but excluding the subsequent verification scan, took 41,363 ms and 35,847 ms on this
+constrained fixture. No full-duration old direct-paste benchmark was run, so these
+measurements do not establish a numerical production speedup.
+
+Both complete paste/undo cycles matched every block and exactly 1,267,224 audit rows.
+The cancellation test retained 12,288 completed blocks with equal history/audit counts;
+undo restored the region and brought the audit count to 24,576. The difference from
+the earlier 8,192-block cancellation runs is the number of concurrently accepted chunks,
+not lost or duplicated data. The final marker was `INCIDENT_PROBE_PASS`.
+
+Queue capacities, admission timeouts, CoreProtect logging and cancellation semantics
+were not relaxed. This fixes the demonstrated ordinary-paste traversal regression,
+not arbitrary third-party integration failures or all sources of database latency.
+The stale QuickShop handler and configured delayed packet policy remain separate.
+
+Local evidence is retained under `build/paste-20261007`: baseline and candidate
+server logs, worker snapshots, and build output. Schematics, third-party binaries,
+and private server logs are not part of the source change.

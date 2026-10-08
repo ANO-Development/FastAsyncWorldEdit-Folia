@@ -21,6 +21,12 @@ The probe checks:
 * Disk-backed edit history.
 
 Run with `-Dincident.stats=true` to inspect the schematic without editing the world.
+Use `-Dincident.directPaste=true` to exercise the untransformed command's
+`Clipboard.paste` path instead of the general paste builder.
+Add `-Dincident.chunkLocal=true` to fail if that path prepares a destination chunk
+more than once. `-Dincident.targetSize=4` tests bounded traversal with a small queue;
+`-Dincident.originZ=-28675` permits a separate, negative Z destination. The probe logs
+paste execution time and prepared/unique chunk counts before world-state verification.
 `-Dincident.auditCompare=true` compares the last schematic actor's placement coordinates
 with the schematic and prints missing block types. These diagnostic modes are not
 the full acceptance test, even when they exit successfully.

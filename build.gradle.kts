@@ -10,7 +10,7 @@ plugins {
     id("xyz.jpenilla.run-paper") version "3.1.0"
 }
 
-val rootVersion: String = (extra.properties["rootVersion"] as? String) ?: "26.10.0"
+val rootVersion: String = (extra.properties["rootVersion"] as? String) ?: "26.10.1"
 val snapshot: String = (extra.properties["snapshot"] as? String) ?: ""
 var revision: String = (extra.properties["revision"] as? String) ?: ""
 var buildNumber: String = (extra.properties["buildNumber"] as? String) ?: ""
@@ -101,8 +101,11 @@ allprojects {
     }
 }
 
-val supportedVersions: List<String> = listOf("1.21", "1.21.1", "1.21.4", "1.21.5",
-        "1.21.8", "1.21.10", "1.21.11", "26.1.2", "26.2")
+val supportedVersions: List<String> = if (providers.gradleProperty("fawe.foliaTarget").orNull.toBoolean()) {
+    listOf("26.2")
+} else {
+    listOf("1.21", "1.21.1", "1.21.4", "1.21.5", "1.21.8", "1.21.10", "1.21.11", "26.1.2", "26.2", "26.3")
+}
 
 tasks {
     supportedVersions.forEach {
