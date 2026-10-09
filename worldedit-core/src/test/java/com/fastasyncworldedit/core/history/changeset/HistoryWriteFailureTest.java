@@ -2,6 +2,13 @@ package com.fastasyncworldedit.core.history.changeset;
 
 import com.fastasyncworldedit.core.Fawe;
 import com.fastasyncworldedit.core.queue.implementation.QueueHandler;
+import com.fastasyncworldedit.core.queue.IChunk;
+import com.fastasyncworldedit.core.queue.IChunkGet;
+import com.fastasyncworldedit.core.queue.IChunkSet;
+import com.fastasyncworldedit.core.nbt.FaweCompoundTag;
+import com.sk89q.worldedit.math.BlockVector3;
+import com.sk89q.worldedit.world.block.BlockState;
+import org.enginehub.linbus.tree.LinCompoundTag;
 import com.sk89q.worldedit.world.World;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.Isolated;
@@ -17,6 +24,44 @@ import static org.mockito.Mockito.*;
 
 @Isolated
 class HistoryWriteFailureTest {
+
+    @Test
+    void partialHistoryDoesNotRemoveTilesInUnexecutedRemainder() {
+        var history = mock(AbstractChangeSet.class,
+                withSettings().useConstructor(mock(World.class)).defaultAnswer(CALLS_REAL_METHODS));
+        IChunk chunk = mock(IChunk.class);
+        IChunkGet before = mock(IChunkGet.class);
+        IChunkSet applied = mock(IChunkSet.class);
+        var tile = FaweCompoundTag.of(LinCompoundTag.builder().putString("id", "minecraft:chest").build());
+        when(before.tiles()).thenReturn(java.util.Map.of(BlockVector3.at(-80, -64, 272), tile));
+        var oldBlock = mock(BlockState.class);
+        var untouched = mock(BlockState.class);
+        when(untouched.getOrdinal()).thenReturn(0);
+        when(before.getBlock(0, -64, 0)).thenReturn(oldBlock);
+        when(applied.getBlock(0, -64, 0)).thenReturn(untouched);
+        history.processSet(chunk, before, applied);
+        verify(history, never()).addTileRemove(any(FaweCompoundTag.class));
+    }
+
+    @Test
+    void removedContainerMetadataIsPreservedEvenWhenBlockTypeDidNotChange() {
+        var history = mock(AbstractChangeSet.class,
+                withSettings().useConstructor(mock(World.class)).defaultAnswer(CALLS_REAL_METHODS));
+        IChunk chunk = mock(IChunk.class);
+        IChunkGet before = mock(IChunkGet.class);
+        IChunkSet applied = mock(IChunkSet.class);
+        var tile = FaweCompoundTag.of(LinCompoundTag.builder().putString("id", "minecraft:chest").build());
+        when(before.tiles()).thenReturn(java.util.Map.of(BlockVector3.at(-80, -64, 272), tile));
+        var block = mock(BlockState.class);
+        when(block.getOrdinal()).thenReturn(20);
+        when(before.getBlock(0, -64, 0)).thenReturn(block);
+        when(applied.getBlock(0, -64, 0)).thenReturn(block);
+        history.processSet(chunk, before, applied);
+        var tag = org.mockito.ArgumentCaptor.forClass(FaweCompoundTag.class);
+        verify(history).addTileRemove(tag.capture());
+        assertEquals(-80, tag.getValue().linTag().getTag("x", org.enginehub.linbus.tree.LinTagType.intTag()).value());
+        assertEquals(272, tag.getValue().linTag().getTag("z", org.enginehub.linbus.tree.LinTagType.intTag()).value());
+    }
 
     @Test
     void diskUndoCannotReturnSuccessAfterHistoryCloseFailure() throws Exception {

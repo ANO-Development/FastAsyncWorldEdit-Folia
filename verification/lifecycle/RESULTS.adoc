@@ -1,0 +1,144 @@
+= FAWE/CoreProtect local verification — 2026-10-08
+
+== Status and scope
+
+The paired candidates passed the local matrix below. Both repositories remain
+uncommitted. Nothing was pushed, released, deployed or restarted on production.
+All owned Canvas and MySQL laboratory listeners were stopped after verification;
+fixtures, databases, failed-run evidence and recordings remain available locally.
+
+FAWE base commit: `601310aeecd2d7d7c98db9a428c7fc6cdd802e24` (`Folia`).
+CoreProtect base commit: `d0dcb31ebb3e8ff6a23277140a85df401dc1b9a5` (`folia-26.2`).
+The candidate changes are in the working trees, not those base commits.
+Embedded versions remain FAWE 26.10.2 and CoreProtect 26.10.1 pending release review.
+
+== Proven findings and changes
+
+* Whole-chunk memory admission did not reserve the recovery writer's physical queue.
+  Earlier candidates still produced record-budget rejection events despite eventually
+  correct audit counts. Durable staged intents now stream through bounded windows before
+  native mutation. Confirmed, unapplied and uncertain outcomes are handled separately.
+* Same-chunk FAWE writers could prepare another snapshot before prior asynchronous
+  settlement finished. A transferable worker-only ownership fence now covers admission,
+  native work, history and downstream settlement. Different chunks remain concurrent.
+* An injected native failure before a second section write demonstrated 4,096 applied
+  blocks with zero undo entries. Owned before/after snapshots now preserve only observed
+  partial changes, including container metadata. The identical reproduction retains
+  correct history and supports a complete undo.
+* CoreProtect's repeated capacity notifications caused contention. Committed prefixes
+  now release capacity together, and admission wakes the head waiter. Captured payload
+  ownership transfers once from the reservation to the existing journal accounting;
+  planning and unused-estimate reservations remain held until their owners close.
+* A control operation did not wake the recovery writer's idle append-queue poll. Profiling
+  showed substantial consumer waits at recovery seal/finish operations. A separate work
+  notification now wakes the writer for either queue without changing durability,
+  batching, queue budgets or control fairness.
+
+The October production logs still do not establish the dominant JVM heap owner.
+These demonstrated defects and controlled results are not evidence that FAWE alone
+caused that incident.
+
+== Environment and timing
+
+Canvas 26.2 build 941, commit `4a0ed14`; Windows; Java 25.0.1.8; eight visible processors,
+four region threads and six FAWE workers. Timed runs used a 4 GiB heap, target queue 48,
+the identical BikiniBottom schematic and an initially empty, preloaded destination.
+Both baseline and candidate kept CoreProtect enabled. MySQL was an isolated local
+8.4.6 instance; DuckDB used the same 512 MiB native-memory setting across comparisons.
+
+[cols="1,1,1,1,1",options="header"]
+|===
+|Backend |Paste mode |Released baseline |Final candidate |Observed speedup
+|DuckDB |Normal |43.377–43.403 s |19.151 s |about 2.3x
+|DuckDB |Skip air |41.799–42.650 s |19.045 s |about 2.2x
+|MySQL |Normal |43.335 s |23.191 s |about 1.9x
+|MySQL |Skip air |42.907 s |22.537 s |about 1.9x
+|===
+
+Each final backend completed both paste/undo modes. Every destination block state was
+checked after paste and undo. Each paste produced exactly 316,806 block audit rows;
+each actor reached 633,612 after undo. MySQL's independent final query counted
+1,267,224 rows. The connected client received all 240 destination chunks during every
+phase without reconnecting. No recovery backlog rejection appeared in either final
+recording. Peak sampled JVM heap was 933 MiB on DuckDB and 966 MiB on MySQL; the largest
+measured distant-region heartbeat interval during final timed phases was 62 ms.
+
+Earlier lifecycle candidates completed additional repeated four-cycle and constrained
+runs. The final wake-up change, not additional threads or a higher queue limit, produced
+the final timing improvement. These are local measurements, not production-time promises.
+
+== Final artifact fault and regression matrix
+
+* FAWE's full Gradle `test` task passed: 276 tests, zero failures/errors. CLI compiled;
+  CLI and the 26.2 adapter had no separate test sources. CoreProtect's full Maven suite
+  passed 145 tests with zero failures/errors/skips, including its local MySQL tests.
+* Two actors edited the same 10,240-block chunk while the first settlement was held.
+  The second did not overtake it. A replacement produced 20,480 audit records through
+  the 8,192-record physical queue. Both undo stages restored their exact predecessors;
+  final actor audit counts were 20,480 and 40,960.
+* Native partial failure with filled chests retained 4,096 applied blocks and 4,099
+  block/NBT history entries. Undo restored both inventories and all blocks. CoreProtect
+  retained 8,196 uncertain intents, with zero falsely confirmed rows for the failed
+  group. Restart preserved the evidence and did not replay it as normal history.
+* A two-second writer stall prevented mutation until the checkpoint could finish.
+  Unrelated region ticks continued. The eventual 10,240-block edit and undo had exact
+  world/history/audit results. Physical writer limits remained enforced.
+* Writer failure before checkpoint produced an explicit edit failure and zero world,
+  history or audit changes. Shutdown correctly reported zero unsafe or durable captures
+  for the retired, never-applied intent.
+* Writer failure after checkpoint produced an explicit failure while retaining all
+  10,240 applied blocks and disk history. After restarting the fixture, all 10,240
+  history records were decoded and undone. Original uncertain audit evidence remained
+  separate from the confirmed undo records.
+* With a 1536 MiB heap, cancellation preserved exactly 8,192 applied blocks, history
+  entries and audit rows; undo reached 16,384 rows and restored the world. A subsequent
+  full BikiniBottom paste/undo cycle passed every block-state and audit assertion.
+* Final successful runs drained to zero reserved/retained audit records and bytes,
+  active bulk groups, physical writer records and recovery bytes. Deliberate uncertain
+  outcomes remained on disk, explicitly reported rather than silently discarded.
+
+Physical writer limits remain 8,192 records/64 MiB, with 64 separate control slots.
+Bulk admission remains 262,144 logical records/128 MiB of conservative accounting weight.
+These are not a cap on the entire JVM or a measurement of every plugin's retained heap.
+
+== Evidence and reproducibility
+
+The probe sources and instructions are in this directory. Runtime evidence is under
+`build/integration-performance-20261008`:
+
+* `wake-duckdb-6.log`, `wake-mysql-6.log`, their JFR/profile files and connected-client logs.
+* `final-smoke-concurrent.log`, `final-smoke-partial.log` and its restart log.
+* `final-smoke-slow.log`, `final-smoke-fail-before.log`, `final-smoke-fail-after.log`
+  and its disk-history restart log.
+* `final-smoke-cancellation.log`, `final-all-tests2.log`, and preserved red/green logs.
+* Per-fixture `plugins/AdmissionInspector/*.csv` contains bounded test-only accounting
+  samples. The inspector is not part of either production candidate JAR.
+
+CoreProtect's unit, format-migration, FIFO, stalled-writer, checksum, cancellation,
+failed-storage and shutdown proofs are retained in its `target/performance-2026-10-08`
+directory, particularly `bulk-candidate7-verify.log` and `LIFECYCLE-HANDOFF.adoc`.
+
+The local Windows JVM emitted existing OSHI/WMI and native-access warnings at startup.
+They were not suppressed. Production's Linux Java 25.0.4.1 and its full plugin stack
+were not reproduced; only the stated Canvas configuration and integrations were tested.
+
+== Staged pair and rollback boundary
+
+The review bundle is `build/review-lifecycle-20261008`:
+
+[source,text]
+----
+8448ac1a9fe55a2391a67a951d34c956c6442fc8ea5364c44e7468f5ce6b51a0  FastAsyncWorldEdit-Folia-26.2-review.jar
+f178fda84ca55b38fa5c3cb4feb13545cb837e4a4d08c00b45ea5f8ef6d6745d  CoreProtect-Folia-26.2-review.jar
+----
+
+Use this as a paired review candidate, not an existing release. No server JAR was changed.
+Before any later authorized deployment, preserve the previous JARs and a coordinated
+backup of the audit database and complete CoreProtect recovery directory. Before the
+candidate ever starts, restoring the staged old JARs is sufficient to undo JAR staging.
+
+Once CoreProtect migrates its journal format, an older JAR intentionally refuses it.
+Do not delete the journal or restore an old database snapshot over newer audit records.
+An after-start rollback requires a data-preserving recovery/reconciliation plan; a
+pre-upgrade snapshot alone is not safe if new events were recorded afterward. Uncertain
+groups must be inspected and reconciled, never automatically treated as confirmed edits.

@@ -27,6 +27,8 @@ public interface IBatchProcessor {
      * The scope closes after processing and scheduling, not after the world write completes. Transfer
      * consumed reservations to their downstream owner; close must release only unused capacity.
      * Tick-thread chunk submissions are rejected before this hook runs.
+     * Implement {@link ChunkWriteScope} on the returned scope when audit publication must distinguish
+     * prepared intent from applied or uncertain native outcomes.
      *
      * @return a non-null scope, closed on both success and failure
      */

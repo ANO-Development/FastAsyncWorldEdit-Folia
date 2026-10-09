@@ -131,9 +131,9 @@ public abstract class AbstractChangeSet implements ChangeSet, IBatchProcessor {
         if (!tilesFrom.isEmpty()) {
             for (Map.Entry<BlockVector3, FaweCompoundTag> entry : tilesFrom.entrySet()) {
                 BlockVector3 pos = entry.getKey();
-                BlockState fromBlock = get.getBlock(pos.x() & 15, pos.y(), pos.z() & 15);
                 BlockState toBlock = set.getBlock(pos.x() & 15, pos.y(), pos.z() & 15);
-                if (fromBlock != toBlock || tilesTo.containsKey(pos)) {
+                if (toBlock.getOrdinal() != BlockTypesCache.ReservedIDs.__RESERVED__
+                        || tilesTo.containsKey(BlockVector3.at(pos.x() & 15, pos.y(), pos.z() & 15))) {
                     addTileRemove(NbtUtils.withPosition(entry.getValue(), entry.getKey().x(), entry.getKey().y(),
                             entry.getKey().z()
                     ));

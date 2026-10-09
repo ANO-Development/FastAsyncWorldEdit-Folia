@@ -1,0 +1,6 @@
+name: PersistenceProbe
+version: 1
+main: PersistenceProbe
+api-version: '26.2'
+folia-supported: true
+depend: [FastAsyncWorldEdit, CoreProtect]

@@ -1,11 +1,13 @@
 package com.fastasyncworldedit.core.queue.implementation.chunk;
 
 import com.fastasyncworldedit.core.Fawe;
+import com.fastasyncworldedit.core.configuration.Settings;
 import com.fastasyncworldedit.core.extent.filter.block.ChunkFilterBlock;
 import com.fastasyncworldedit.core.extent.processor.EmptyBatchProcessor;
 import com.fastasyncworldedit.core.extent.processor.heightmap.HeightMapType;
 import com.fastasyncworldedit.core.nbt.FaweCompoundTag;
 import com.fastasyncworldedit.core.queue.Filter;
+import com.fastasyncworldedit.core.queue.ChunkWriteSnapshot;
 import com.fastasyncworldedit.core.queue.IChunk;
 import com.fastasyncworldedit.core.queue.IChunkGet;
 import com.fastasyncworldedit.core.queue.IChunkSet;
@@ -1065,38 +1067,50 @@ public class ChunkHolder<T extends Future<T>> implements IQueueChunk<T> {
         if (Fawe.isMainThread()) {
             throw new IllegalStateException("Chunk edits must be submitted from a worker thread");
         }
-        try (AutoCloseable admission = owner.getProcessor().prepareChunk(this, set)) {
+        ChunkWriteLifecycle lifecycle = null;
+        IChunkGet get = getOrCreateGet();
+        try (ChunkWriteLifecycle write = ChunkWriteLifecycle.prepare(get, owner.getProcessor(), this, set,
+                Settings.settings().QUEUE.ADMISSION_TIMEOUT_MS)) {
+            lifecycle = write;
             if (parentWrapper != null) {
                 if (!parentWrapper.invalidate(this)) {
                     throw new IllegalStateException("Existing chunk not equal to expected");
                 }
             }
-            IChunkGet get = getOrCreateGet();
             try {
                 get.lockCall();
                 trackExtent();
                 boolean postProcess = !(getExtent().getPostProcessor() instanceof EmptyBatchProcessor);
                 final int copyKey = get.setCreateCopy(postProcess);
+                write.onFailure(() -> {
+                    ChunkWriteSnapshot snapshot = get.getFailureSnapshot(copyKey);
+                    if (snapshot == null) return;
+                    try {
+                        if (postProcess) getExtent().postProcess(this, snapshot.before(), snapshot.applied());
+                    } finally {
+                        finalize.run();
+                    }
+                });
                 // We should always be performing processing/postprocessing with this instance (i.e. not with this.parentWrapper)
                 final IChunkSet iChunkSet = getExtent().processSet(this, get, set);
-                Runnable finalizer;
-                if (postProcess) {
-                    finalizer = () -> {
-                        getExtent().postProcess(this, get.getCopy(copyKey), iChunkSet);
-                        finalize.run();
-                    };
-                } else {
-                    finalizer = finalize;
+                if (iChunkSet == null) {
+                    write.notStarted();
+                    return null;
                 }
-                if (iChunkSet == null) return null;
-                return get.call(extent, iChunkSet, finalizer);
+                Runnable finalizer = () -> write.finish(() -> {
+                    if (postProcess) getExtent().postProcess(this, get.getCopy(copyKey), iChunkSet);
+                }, finalize);
+                write.beforeWrite();
+                return (U) write.observe(get.call(extent, iChunkSet, finalizer));
             } finally {
                 get.unlockCall();
                 untrackExtent();
             }
-        } catch (RuntimeException exception) {
+        } catch (RuntimeException | Error exception) {
+            if (lifecycle != null) lifecycle.failed(exception);
             throw exception;
         } catch (Exception exception) {
+            if (lifecycle != null) lifecycle.failed(exception);
             throw new IllegalStateException("Chunk admission failed", exception);
         }
     }

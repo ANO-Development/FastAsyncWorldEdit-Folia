@@ -23,6 +23,9 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 
@@ -34,6 +37,7 @@ public abstract class AbstractBukkitGetBlocks<ServerLevel, LevelChunk> extends C
     protected final int chunkX;
     protected final int chunkZ;
     protected final ReentrantLock callLock = new ReentrantLock();
+    private final Semaphore writeOwnership = new Semaphore(1, true);
     protected final ConcurrentHashMap<Integer, IChunkGet> copies = new ConcurrentHashMap<>();
     protected final IntPair chunkPos;
     protected final int minHeight;
@@ -75,6 +79,18 @@ public abstract class AbstractBukkitGetBlocks<ServerLevel, LevelChunk> extends C
     }
 
     @Override
+    public AutoCloseable acquireWrite(long timeoutMillis) throws InterruptedException {
+        if (Fawe.isMainThread()) throw new IllegalStateException("Chunk write ownership requires a worker thread");
+        if (!writeOwnership.tryAcquire(Math.max(0, timeoutMillis), TimeUnit.MILLISECONDS)) {
+            throw new IllegalStateException("Timed out waiting for the previous chunk write to settle");
+        }
+        AtomicBoolean released = new AtomicBoolean();
+        return () -> {
+            if (released.compareAndSet(false, true)) writeOwnership.release();
+        };
+    }
+
+    @Override
     @SuppressWarnings({"rawtypes", "unchecked"})
     public synchronized <T extends Future<T>> T call(IQueueExtent<? extends IChunk> owner, IChunkSet set, Runnable finalizer) {
         if (!callLock.isHeldByCurrentThread()) {
@@ -84,7 +100,8 @@ public abstract class AbstractBukkitGetBlocks<ServerLevel, LevelChunk> extends C
         final ServerLevel nmsWorld = serverLevel;
         CompletableFuture<LevelChunk> nmsChunkFuture = ensureLoaded(nmsWorld);
         LevelChunk chunk = nmsChunkFuture.getNow(null);
-        if ((chunk == null && MemUtil.shouldBeginSlow()) || Settings.settings().QUEUE.ASYNC_CHUNK_LOAD_WRITE) {
+        if ((chunk == null && (MemUtil.shouldBeginSlow() || writeOwnership.availablePermits() == 0))
+                || Settings.settings().QUEUE.ASYNC_CHUNK_LOAD_WRITE) {
             try {
                 // "Artificially" slow FAWE down if memory low as performing the operation async can cause large amounts of
                 // memory usage

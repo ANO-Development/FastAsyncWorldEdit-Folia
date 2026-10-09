@@ -23,6 +23,75 @@ class ChunkWriteFailureTest {
 
     @Test
     @SuppressWarnings({"rawtypes", "unchecked"})
+    void ownedLoadDoesNotQueueAContinuationBehindOtherOwnershipWaiters() throws Exception {
+        Settings.QUEUE previous = Settings.settings().QUEUE;
+        Settings.settings().QUEUE = new Settings.QUEUE();
+        Settings.settings().QUEUE.ASYNC_CHUNK_LOAD_WRITE = false;
+        var blocks = mock(AbstractBukkitGetBlocks.class,
+                withSettings().useConstructor(new Object(), 0, 0, 0, 16).defaultAnswer(CALLS_REAL_METHODS));
+        var load = new CompletableFuture<>();
+        var loading = new java.util.concurrent.CountDownLatch(1);
+        doAnswer(invocation -> { loading.countDown(); return load; }).when(blocks).ensureLoaded(any());
+        var owner = mock(IQueueExtent.class);
+        try (var fawe = mockStatic(Fawe.class);
+                var executor = java.util.concurrent.Executors.newSingleThreadExecutor();
+                AutoCloseable ownership = blocks.acquireWrite(0)) {
+            fawe.when(Fawe::isMainThread).thenReturn(false);
+            var result = executor.submit(() -> {
+                blocks.lockCall();
+                try {
+                    return blocks.call(owner, mock(IChunkSet.class), () -> {});
+                } finally {
+                    blocks.unlockCall();
+                }
+            });
+            try {
+                assertTrue(loading.await(2, TimeUnit.SECONDS));
+                assertThrows(java.util.concurrent.TimeoutException.class, () -> result.get(100, TimeUnit.MILLISECONDS));
+            } finally {
+                load.complete(new Object());
+            }
+            result.get(2, TimeUnit.SECONDS);
+            verify(owner, never()).submitTaskUnchecked(any());
+            verify(blocks).internalCall(any(), any(), anyInt(), any(), any());
+        } finally {
+            Settings.settings().QUEUE = previous;
+        }
+    }
+
+    @Test
+    void writeOwnershipSurvivesWorkerHandoffAndReleasesOnce() throws Exception {
+        var blocks = mock(AbstractBukkitGetBlocks.class,
+                withSettings().useConstructor(new Object(), 0, 0, 0, 16).defaultAnswer(CALLS_REAL_METHODS));
+        try (var fawe = mockStatic(Fawe.class)) {
+            fawe.when(Fawe::isMainThread).thenReturn(false);
+            AutoCloseable first = blocks.acquireWrite(0);
+            assertThrows(IllegalStateException.class, () -> blocks.acquireWrite(0));
+            try (var executor = java.util.concurrent.Executors.newSingleThreadExecutor()) {
+                executor.submit(() -> { first.close(); return null; }).get(2, TimeUnit.SECONDS);
+            }
+            try (AutoCloseable second = blocks.acquireWrite(0)) {
+                first.close();
+                assertThrows(IllegalStateException.class, () -> blocks.acquireWrite(0));
+            }
+            try (AutoCloseable third = blocks.acquireWrite(0)) {
+                assertNotNull(third);
+            }
+        }
+    }
+
+    @Test
+    void regionThreadCannotAcquireWriteOwnership() {
+        var blocks = mock(AbstractBukkitGetBlocks.class,
+                withSettings().useConstructor(new Object(), 0, 0, 0, 16).defaultAnswer(CALLS_REAL_METHODS));
+        try (var fawe = mockStatic(Fawe.class)) {
+            fawe.when(Fawe::isMainThread).thenReturn(true);
+            assertThrows(IllegalStateException.class, () -> blocks.acquireWrite(0));
+        }
+    }
+
+    @Test
+    @SuppressWarnings({"rawtypes", "unchecked"})
     void delayedChunkLoadIsIncludedInCompletionAndReportsFailure() throws Exception {
         Settings.QUEUE previous = Settings.settings().QUEUE;
         Settings.settings().QUEUE = new Settings.QUEUE();

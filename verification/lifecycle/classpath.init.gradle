@@ -1,0 +1,9 @@
+gradle.projectsEvaluated {
+    def bukkitProject = gradle.rootProject.findProject(':worldedit-bukkit')
+    if (bukkitProject == null) return
+    bukkitProject.tasks.register('printLifecycleClasspath') {
+        doLast {
+            println('LIFECYCLE_CLASSPATH=' + bukkitProject.configurations.getByName('testRuntimeClasspath').asPath)
+        }
+    }
+}

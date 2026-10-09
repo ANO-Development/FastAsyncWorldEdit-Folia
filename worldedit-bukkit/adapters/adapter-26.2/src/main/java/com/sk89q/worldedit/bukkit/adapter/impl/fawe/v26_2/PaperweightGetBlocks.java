@@ -5,6 +5,7 @@ import com.fastasyncworldedit.bukkit.adapter.DelegateSemaphore;
 import com.fastasyncworldedit.bukkit.adapter.NativeEntityFunctionSet;
 import com.fastasyncworldedit.bukkit.util.PaperSupport;
 import com.fastasyncworldedit.core.FaweCache;
+import com.fastasyncworldedit.core.queue.ChunkWriteSnapshot;
 import com.fastasyncworldedit.core.configuration.Settings;
 import com.fastasyncworldedit.core.extent.processor.heightmap.HeightMapType;
 import com.fastasyncworldedit.core.internal.exception.FaweException;
@@ -371,13 +372,38 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
             LevelChunk nmsChunk,
             ServerLevel nmsWorld
     ) throws Exception {
-        PaperweightGetBlocks_Copy copy = createCopy ? new PaperweightGetBlocks_Copy(nmsChunk) : null;
-        if (createCopy) {
+        PaperweightGetBlocks_Copy copy = createCopy ? PaperweightGetBlocks_Copy.capture(nmsChunk, set, adapter) : null;
+        if (copy != null) {
             if (copies.containsKey(copyKey)) {
                 throw new IllegalStateException("Copy key already used.");
             }
             copies.put(copyKey, copy);
         }
+        try {
+            return performCall(set, finalizer, nmsChunk, nmsWorld);
+        } catch (Exception | Error failure) {
+            if (copy != null) {
+                try {
+                    copy.captureFailure(set, adapter);
+                } catch (Exception | Error snapshotFailure) {
+                    if (snapshotFailure != failure) failure.addSuppressed(snapshotFailure);
+                }
+            }
+            throw failure;
+        }
+    }
+
+    @Override
+    public ChunkWriteSnapshot getFailureSnapshot(int key) {
+        PaperweightGetBlocks_Copy copy = (PaperweightGetBlocks_Copy) copies.get(key);
+        if (copy == null) return null;
+        ChunkWriteSnapshot snapshot = copy.failureSnapshot();
+        copies.remove(key, copy);
+        return snapshot;
+    }
+
+    private <T extends Future<T>> T performCall(IChunkSet set, Runnable finalizer, LevelChunk nmsChunk,
+                                               ServerLevel nmsWorld) throws Exception {
         // Remove existing tiles. Create a copy so that we can remove blocks
         Map<BlockPos, BlockEntity> chunkTiles = new HashMap<>(nmsChunk.getBlockEntities());
         List<BlockEntity> beacons = null;
@@ -404,9 +430,6 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
                         continue;
                     }
                     nmsChunk.removeBlockEntity(tile.getBlockPos());
-                    if (createCopy) {
-                        copy.storeTile(tile);
-                    }
                 }
             }
         }
@@ -432,10 +455,6 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
                     if (biomes[setSectionIndex] != null) {
                         synchronized (super.sectionLocks[getSectionIndex]) {
                             LevelChunkSection existingSection = levelChunkSections[getSectionIndex];
-                            if (createCopy && existingSection != null) {
-                                copy.storeBiomes(getSectionIndex, existingSection.getBiomes());
-                            }
-
                             if (existingSection == null) {
                                 PalettedContainer<Holder<Biome>> biomeData = PaperweightPlatformAdapter.getBiomePalettedContainer(
                                         biomes[setSectionIndex],
@@ -500,16 +519,6 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
                     // Don't attempt to tick section whilst we're editing
                     if (existingSection != null) {
                         PaperweightPlatformAdapter.clearCounts(existingSection);
-                    }
-
-                    if (createCopy) {
-                        char[] tmpLoad = load(layerNo);
-                        char[] copyArr = new char[4096];
-                        System.arraycopy(tmpLoad, 0, copyArr, 0, 4096);
-                        copy.storeSection(getSectionIndex, copyArr);
-                        if (biomes != null && existingSection != null) {
-                            copy.storeBiomes(getSectionIndex, existingSection.getBiomes());
-                        }
                     }
 
                     if (existingSection == null) {
@@ -651,9 +660,6 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
                     for (Entity entity : entities) {
                         UUID uuid = entity.getUUID();
                         if (entityRemoves.contains(uuid)) {
-                            if (createCopy) {
-                                copy.storeEntity(entity);
-                            }
                             removeEntity(entity);
                             entitiesRemoved.add(uuid);
                             entityRemoves.remove(uuid);

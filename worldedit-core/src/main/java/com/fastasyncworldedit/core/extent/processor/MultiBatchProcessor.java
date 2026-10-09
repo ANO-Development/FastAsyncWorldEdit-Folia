@@ -5,6 +5,7 @@ import com.fastasyncworldedit.core.FaweCache;
 import com.fastasyncworldedit.core.configuration.Settings;
 import com.fastasyncworldedit.core.internal.exception.FaweException;
 import com.fastasyncworldedit.core.queue.Filter;
+import com.fastasyncworldedit.core.queue.ChunkWriteScope;
 import com.fastasyncworldedit.core.queue.IBatchProcessor;
 import com.fastasyncworldedit.core.queue.IChunk;
 import com.fastasyncworldedit.core.queue.IChunkGet;
@@ -84,13 +85,53 @@ public class MultiBatchProcessor implements IBatchProcessor {
             }
         } catch (Exception | Error failure) {
             try {
+                completeScopes(scopes, ChunkWriteScope.Outcome.NOT_STARTED, failure);
+            } catch (Exception | Error completionFailure) {
+                if (failure != completionFailure) failure.addSuppressed(completionFailure);
+            }
+            try {
                 closeScopes(scopes);
             } catch (Exception | Error cleanupFailure) {
                 if (failure != cleanupFailure) failure.addSuppressed(cleanupFailure);
             }
             throw failure;
         }
-        return () -> closeScopes(scopes);
+        return new ChunkWriteScope() {
+            @Override
+            public void beforeWrite() throws Exception {
+                for (AutoCloseable scope : scopes) {
+                    if (scope instanceof ChunkWriteScope write) {
+                        write.beforeWrite();
+                    }
+                }
+            }
+
+            @Override
+            public void complete(Outcome outcome, Throwable failure) throws Exception {
+                completeScopes(scopes, outcome, failure);
+            }
+
+            @Override
+            public void close() throws Exception {
+                closeScopes(scopes);
+            }
+        };
+    }
+
+    private static void completeScopes(List<AutoCloseable> scopes, ChunkWriteScope.Outcome outcome, Throwable failure) throws Exception {
+        Throwable completionFailure = null;
+        for (AutoCloseable scope : scopes) {
+            if (scope instanceof ChunkWriteScope write) {
+                try {
+                    write.complete(outcome, failure);
+                } catch (Exception | Error exception) {
+                    if (completionFailure == null) completionFailure = exception;
+                    else if (completionFailure != exception) completionFailure.addSuppressed(exception);
+                }
+            }
+        }
+        if (completionFailure instanceof Exception exception) throw exception;
+        if (completionFailure instanceof Error error) throw error;
     }
 
     private static void closeScopes(List<AutoCloseable> scopes) throws Exception {

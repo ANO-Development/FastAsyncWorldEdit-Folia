@@ -1,0 +1,109 @@
+= Durable chunk lifecycle verification
+
+These plugins intentionally edit and stop a disposable server. Never install them on
+a live server or reuse a production world/database. Their loopback port guard is an
+additional safeguard, not a substitute for isolation. Run one probe at a time.
+
+== Inputs and fixture
+
+Use Canvas 26.2 build 941 (`4a0ed14`), Java 25, the paired candidate FAWE and CoreProtect
+JARs, and a new flat world. Bind `server-ip=127.0.0.1`, `server-port=25708`, disable online
+authentication only in this inaccessible laboratory fixture, and use a separate local
+audit database. Six FAWE workers, target queue size 48, four region threads, and a
+1536 MiB or 4 GiB maximum heap reproduce the recorded matrix.
+
+Copy the privately supplied `BikiniBottom.schem` into the fixture's parent directory.
+Its SHA-256 is `aa6e741e9f09ea14c41d66817dce09de8b49ca896014505319215bab7c40639e`.
+It contains 245 x 54 x 215 cells, 316,806 non-air blocks and 117 block entities.
+The schematic and server/dependency binaries are not committed here.
+
+CoreProtect's candidate recovery journal uses a newer format. Preserve failed fixtures
+and their complete databases/journals for inspection. Do not downgrade a populated
+fixture by replacing its JAR alone or delete pending audit data to make a test pass.
+
+== Compile a probe
+
+Build FAWE normally with JDK 25. Obtain the matching Bukkit test dependency classpath
+without modifying the main build:
+
+[source,powershell]
+----
+$line = .\gradlew.bat -I verification/lifecycle/classpath.init.gradle :worldedit-bukkit:printLifecycleClasspath --console=plain |
+    Select-String '^LIFECYCLE_CLASSPATH='
+$apiClasspath = $line.Line.Substring('LIFECYCLE_CLASSPATH='.Length)
+$probeClasspath = "$apiClasspath;$faweCandidate;$coreProtectCandidate"
+----
+
+Set `$faweCandidate` and `$coreProtectCandidate` to the absolute paths of the immutable
+candidate JARs. Compile the selected probe into its own fresh output directory, copy
+that probe's `plugin.yml` there, and package the directory with `jar cf`. For example:
+
+[source,powershell]
+----
+javac -cp $probeClasspath -d build/lifecycle-probe verification/lifecycle/concurrent/ConcurrentWriteProbe.java
+Copy-Item verification/lifecycle/concurrent/plugin.yml build/lifecycle-probe/plugin.yml
+jar cf build/ConcurrentWriteProbe.jar -C build/lifecycle-probe .
+----
+
+Copy the probe JAR and the paired candidate JARs into the isolated fixture's `plugins`
+directory. Ordinary JVM flags are `-Xms512M -Xmx1536M -XX:ActiveProcessorCount=8`,
+`-Djava.net.preferIPv4Stack=true`, `-Dterminal.jline=false` and `-Dterminal.ansi=false`.
+The probe stops its own fixture after reporting success or failure. Inspect its marker,
+all assertions, audit counts and shutdown status; a process exit code alone is insufficient.
+
+== Cases
+
+`benchmark/BenchmarkProbe.java`::
+Four alternating normal/skip-air paste-and-undo cycles of the same schematic. Every
+destination block state is checked after paste and undo; audit rows must be exactly
+316,806 and 633,612 per actor. A separate region heartbeat and heap samples run during
+the edits. `-Dbenchmark.cycles=2` selects the shorter paired normal/skip-air comparison.
+Use a 4 GiB heap for timing comparisons. A client must join to start this probe.
+
+`benchmark/client.cjs`::
+The local protocol client counts live destination chunk updates without reconnecting.
+It requires `minecraft-protocol` with Minecraft 26.2 protocol data on `NODE_PATH`.
+The recorded setup used minecraft-protocol 1.68.0 and minecraft-data 3.116.0 with the
+26.2 dataset at `4dd8762a45b97dafdb216b8d7a95ab92379e2c68`.
+This observes packet delivery, not an actual client's rendered graphics.
+
+`concurrent/ConcurrentWriteProbe.java`::
+Two actors replace the same 10,240-block chunk. The first holds its settlement while
+the second attempts admission. The second cannot overtake it. The replacement produces
+20,480 audit records, exceeding physical writer capacity without requiring a larger queue.
+Both undo steps must restore their exact predecessors. Final actor audit counts are
+20,480 and 40,960.
+
+`partial/PartialWriteProbe.java`::
+Injects a native failure before the second section write. Exactly 4,096 blocks apply.
+Use `-Dprobe.containers=true` to include filled chests in both sections; history then
+contains 4,099 block/NBT changes and undo must restore both inventories. The failed
+group must have zero confirmed audit rows and retain uncertain intents. Restart the
+same fixture with `-Dprobe.recovery=true` (and the same container flag) to prove that
+uncertain evidence survives without becoming normal history.
+
+`persistence/PersistenceProbe.java`::
+`-Dprobe.mode=slow` pauses the recovery writer for two seconds: no native writes may
+pass the checkpoint, unrelated region ticks continue, and the eventual edit/undo
+must have exact audit counts. `fail-before` fails the writer before the checkpoint
+and requires zero world/history/audit changes. `fail-after` fails the writer after
+durable intent but before native mutation: the applied 10,240 blocks retain disk
+history, the command fails explicitly, and no unconfirmed records enter normal history.
+Restart that same fixture with `-Dprobe.mode=recover` to decode its 10,240 disk history
+records and undo them. Original uncertain audit evidence remains available separately.
+
+The existing `verification/incident/IncidentProbe.java` additionally covers cancellation
+and full schematic cycles under a 1536 MiB heap. Its legacy input filename is `500am1.schem`;
+the current comparison copied BikiniBottom to that name in the disposable fixture parent.
+
+== Acceptance
+
+Run unit tests and these native probes on the exact candidate checksums. Confirm world
+contents, history and confirmed audit counts separately. For normal completed runs,
+require zero unsafe captures, pending outcomes and recovery bytes at shutdown; deliberate
+failure tests instead require explicitly retained uncertain evidence. Examine JFR for
+physical queue rejections even when no warning reached the server log.
+
+Do not count faster no-CoreProtect runs as an acceptable production configuration.
+Do not infer the original production heap owner from local timing, or promise identical
+timings on a different CPU, disk, JVM patch version or plugin stack.

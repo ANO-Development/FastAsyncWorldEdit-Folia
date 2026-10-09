@@ -1,5 +1,43 @@
 # CoreProtect integration on Canvas 26.2
 
+## 26.10.3 durable chunk lifecycle
+
+Install FAWE 26.10.3 with ANO CoreProtect 26.10.2. The coordinated integration requires
+this fork's `ChunkWriteScope` contract; older FAWE releases do not provide it.
+
+Each live chunk retains worker-only write ownership from admission through downstream
+settlement. Different chunks remain concurrent; another FAWE writer cannot capture the
+same chunk before its predecessor settles. The ownership wait is bounded by
+`queue.admission-timeout-ms`, never runs on a region thread, and does not move region-owned
+world access onto workers.
+
+Processors may return `ChunkWriteScope` from `prepareChunk`. Its `beforeWrite` checkpoint
+runs after `processSet`, before scheduling native mutation. The paired CoreProtect build
+streams durable intents through bounded writer windows rather than rejecting a chunk
+merely because it contains more records than the physical writer queue can hold.
+Closing the submitting worker's scope detaches its context; it does not cancel admitted
+work or release resources owned by pending completion.
+
+The scope receives one outcome off region threads:
+
+- `NOT_STARTED`: no native write was scheduled; prepared intents can be retired.
+- `APPLIED`: native work completed and history finalization was attempted. A subsequent
+  history or audit acknowledgement failure still fails the operation and preserves data.
+- `UNCERTAIN`: native work may have partially applied. CoreProtect retains the complete
+  durable intent separately instead of publishing it as confirmed history.
+
+The 26.2 adapter captures old state before mutation and derives partial history from
+observed state after a native failure. It does not put the unexecuted intended remainder
+into undo history. Block-entity metadata and the history of already completed chunks
+remain available. This is not an atomic transaction spanning Minecraft world saves,
+FAWE history files and the audit database; an interrupted process can leave an explicitly
+uncertain group that requires reconciliation.
+
+CoreProtect 26.10.2 migrates its recovery journal format. A rollback is not a
+JAR-only swap: preserve the history database and recovery directory together, including
+pending/uncertain records. Never delete a live journal to make an older binary start.
+Local fault-test evidence and benchmark results are documented in `verification/lifecycle/RESULTS.adoc`.
+
 ## 26.10.2 live chunk updates
 
 The 26.2 adapter sends completed terrain to connected viewers while the rest of an
@@ -110,4 +148,4 @@ Build and run the relevant Gradle checks with JDK 25:
 .\gradlew.bat :worldedit-core:test :worldedit-bukkit:test :worldedit-bukkit:adapters:adapter-26.2:test :worldedit-bukkit:shadowJar
 ```
 
-The current Canvas artifact is `worldedit-bukkit/build/libs/FastAsyncWorldEdit-Paper-26.10.2.jar`.
+The current Canvas artifact is `worldedit-bukkit/build/libs/FastAsyncWorldEdit-Paper-26.10.3.jar`.

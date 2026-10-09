@@ -90,12 +90,30 @@ public interface IChunkGet extends IBlocks, Trimable, InputExtent, ITileInput {
     }
 
     /**
+     * Transfer a failed write's snapshots to its history finalizer. Implementations capture the applied
+     * set on the owning thread before propagating failure; this method must not read live world state.
+     * A null result means no partial snapshot is available.
+     */
+    @Nullable
+    default ChunkWriteSnapshot getFailureSnapshot(int key) {
+        return null;
+    }
+
+    /**
      * Lock the {@link IChunkGet#call(IQueueExtent, IChunkSet, Runnable)} method to the current thread using a reentrant lock. Also locks
      * related methods e.g. {@link IChunkGet#setCreateCopy(boolean)}
      *
      * @since 2.8.2
      */
     default void lockCall() {}
+
+    /**
+     * Acquire worker-only ownership through downstream write settlement. The returned permit may be
+     * released by a different completion worker. Implementations without live-world writes need no fence.
+     */
+    default AutoCloseable acquireWrite(long timeoutMillis) throws InterruptedException {
+        return () -> {};
+    }
 
     /**
      * Unlock {@link IChunkGet#call(IQueueExtent, IChunkSet, Runnable)} (and other related methods) to executions from other threads
