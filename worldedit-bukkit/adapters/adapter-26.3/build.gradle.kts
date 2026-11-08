@@ -11,7 +11,7 @@ configurations.named("testRuntimeClasspath") {
 
 dependencies {
     // https://artifactory.papermc.io/ui/native/universe/io/papermc/paper/dev-bundle/
-    the<PaperweightUserDependenciesExtension>().paperDevBundle("26.3.build.+")
+    the<PaperweightUserDependenciesExtension>().foliaDevBundle("26.3.build.6-alpha")
     testRuntimeOnly(libs.snakeyaml) {
         because("Keep adapter tests on Bukkit's SnakeYaml while excluding LeafPile's conflicting transitive version")
     }
