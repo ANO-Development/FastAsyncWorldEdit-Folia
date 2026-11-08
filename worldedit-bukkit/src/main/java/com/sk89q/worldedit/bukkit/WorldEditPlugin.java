@@ -682,6 +682,28 @@ public class WorldEditPlugin extends JavaPlugin {
         return adapter.value().orElse(null);
     }
 
+    //FAWE start - WorldEdit 7.4 API; WorldGuard 7.0.21+ calls this to choose Folia's schedulers
+    private static final boolean FOLIA = classExists("io.papermc.paper.threadedregions.RegionizedServer");
+
+    private static boolean classExists(String name) {
+        try {
+            Class.forName(name, false, WorldEditPlugin.class.getClassLoader());
+            return true;
+        } catch (ClassNotFoundException e) {
+            return false;
+        }
+    }
+
+    /**
+     * Whether the server runs Folia's regionised threading (Folia or a fork of it, such as Canvas).
+     *
+     * @return true on Folia
+     */
+    public boolean isFolia() {
+        return FOLIA;
+    }
+    //FAWE end
+
     private class WorldInitListener implements Listener {
 
         private boolean loaded = false;

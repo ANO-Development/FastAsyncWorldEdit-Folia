@@ -36,6 +36,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -115,6 +116,16 @@ public class YAMLProcessor extends YAMLNode {
     public YAMLProcessor(File file, boolean writeDefaults) {
         this(file, writeDefaults, YAMLFormat.COMPACT);
     }
+
+    //FAWE start - WorldEdit 7.4 API; WorldGuard 7.0.21+ loads its configs through this
+    public YAMLProcessor(Path file, boolean writeDefaults, YAMLFormat format) {
+        this(file.toFile(), writeDefaults, format);
+    }
+
+    public YAMLProcessor(Path file, boolean writeDefaults) {
+        this(file, writeDefaults, YAMLFormat.COMPACT);
+    }
+    //FAWE end
 
     /**
      * Loads the configuration file.
