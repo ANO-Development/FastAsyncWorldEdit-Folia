@@ -458,9 +458,15 @@ public class LocalSession implements TextureHolder {
         checkNotNull(editSession);
 
         // Don't store anything if no changes were made
+        //FAWE start - an edit stopped partway (//cancel, a limit) never sets its change count, but the
+        // chunks it already wrote are in its change set and must stay undoable
         if (editSession.size() == 0) {
-            return;
+            ChangeSet changeSet = editSession.getChangeSet();
+            if (changeSet == null || changeSet.isEmpty()) {
+                return;
+            }
         }
+        //FAWE end
 
         //FAWE start
         Actor actor = editSession.getActor();
