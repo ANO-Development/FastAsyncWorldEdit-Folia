@@ -475,6 +475,11 @@ public class SingleThreadQueueExtent extends ExtentBatchProcessorHolder implemen
     void checkFailure() {
         Throwable failure = submissionFailure.get();
         if (failure != null) {
+            // A deliberate stop (//cancel, an edit limit, low memory) keeps its own message; only a
+            // write that actually went wrong is reported as a chunk-write failure.
+            if (isDeliberateStop(failure)) {
+                throw (FaweException) failure;
+            }
             FaweException exception = new FaweException(Caption.of("fawe.error.chunk-write"));
             exception.initCause(failure);
             throw exception;
@@ -503,8 +508,14 @@ public class SingleThreadQueueExtent extends ExtentBatchProcessorHolder implemen
             if (failure instanceof FaweException exception) {
                 faweExceptionReasonsUsed[exception.getType().ordinal()] = true;
             }
-            LOGGER.error("Chunk write failed; the edit may be incomplete", failure);
+            if (!isDeliberateStop(failure)) {
+                LOGGER.error("Chunk write failed; the edit may be incomplete", failure);
+            }
         }
+    }
+
+    private static boolean isDeliberateStop(Throwable failure) {
+        return failure instanceof FaweException exception && exception.getType() != FaweException.Type.OTHER;
     }
 
     @Override

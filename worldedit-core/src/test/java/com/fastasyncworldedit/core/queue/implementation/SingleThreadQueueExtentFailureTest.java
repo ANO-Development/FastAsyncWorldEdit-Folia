@@ -122,6 +122,25 @@ class SingleThreadQueueExtentFailureTest {
     }
 
     @Test
+    void manualCancelIsNotReportedAsAChunkWriteFailure() {
+        SingleThreadQueueExtent queue = new SingleThreadQueueExtent();
+        assertTrue(queue.cancel());
+        assertSame(com.fastasyncworldedit.core.FaweCache.MANUAL, assertThrows(RuntimeException.class, queue::checkFailure));
+    }
+
+    @Test
+    void editLimitFromAChunkWriteKeepsItsOwnReason() throws Exception {
+        SingleThreadQueueExtent queue = new SingleThreadQueueExtent();
+        var limit = com.fastasyncworldedit.core.FaweCache.MAX_CHANGES;
+        try (MockedStatic<Fawe> fawe = mockStatic(Fawe.class)) {
+            fawe.when(Fawe::isMainThread).thenReturn(true);
+            queue.submit(chunk(0, CompletableFuture.failedFuture(limit)));
+
+            assertSame(limit, assertThrows(RuntimeException.class, queue::flush));
+        }
+    }
+
+    @Test
     void acceptedWriteCannotBeCancelledBeforeItsHistoryCompletes() throws Exception {
         SingleThreadQueueExtent queue = new SingleThreadQueueExtent();
         CompletableFuture<?> write = new CompletableFuture<>();

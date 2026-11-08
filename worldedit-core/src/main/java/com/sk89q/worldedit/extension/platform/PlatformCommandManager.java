@@ -714,6 +714,13 @@ public final class PlatformCommandManager {
         handleCommandTask(task, context, session, event);
     }
 
+    //FAWE start
+    private static boolean sameReason(@Nullable FaweException reported, FaweException exception) {
+        return reported != null && (reported == exception
+                || (reported.getType() == exception.getType() && reported.getMessage().equals(exception.getMessage())));
+    }
+    //FAWE end
+
     public void handleCommandTask(
             ThrowableSupplier<Throwable> task,
             InjectedValueAccess context,
@@ -723,6 +730,9 @@ public final class PlatformCommandManager {
         Actor actor = context.injectedValue(Key.of(Actor.class)).orElseThrow(() -> new IllegalStateException("No player"));
 
         long start = System.currentTimeMillis();
+        //FAWE start - the stop reason already shown to the actor, so closing the edit does not repeat it
+        FaweException reported = null;
+        //FAWE end
 
         try {
             // This is a bit of a hack, since the call method can only throw CommandExceptions
@@ -751,14 +761,16 @@ public final class PlatformCommandManager {
                 actor.print(e.getRichMessage());
             }
         } catch (FaweException e) {
+            reported = e;
             actor.print(Caption.of("fawe.cancel.reason", e.getComponent()));
         } catch (UsageException e) {
             actor.printError(e.getRichMessage());
         } catch (CommandExecutionException e) {
             handleUnknownException(actor, e.getCause());
         } catch (CommandException e) {
-            if (e.getCause() instanceof FaweException) {
-                actor.print(Caption.of("fawe.cancel.reason", ((FaweException) e.getCause()).getComponent()));
+            if (e.getCause() instanceof FaweException faweException) {
+                reported = faweException;
+                actor.print(Caption.of("fawe.cancel.reason", faweException.getComponent()));
             } else {
                 Component msg = e.getRichMessage();
                 if (msg == TextComponent.empty()) {
@@ -786,7 +798,9 @@ public final class PlatformCommandManager {
                     editSession.close();
                     completed = true;
                 } catch (FaweException exception) {
-                    actor.printError(exception.getComponent());
+                    if (!sameReason(reported, exception)) {
+                        actor.printError(exception.getComponent());
+                    }
                 } catch (RuntimeException exception) {
                     handleUnknownException(actor, exception);
                 } finally {
