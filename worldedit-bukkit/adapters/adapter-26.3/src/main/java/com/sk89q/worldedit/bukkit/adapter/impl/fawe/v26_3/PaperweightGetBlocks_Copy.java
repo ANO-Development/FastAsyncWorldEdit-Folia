@@ -4,6 +4,8 @@ import com.fastasyncworldedit.bukkit.util.PaperSupport;
 import com.fastasyncworldedit.core.extent.processor.heightmap.HeightMapType;
 import com.fastasyncworldedit.core.nbt.FaweCompoundTag;
 import com.fastasyncworldedit.core.queue.IBlocks;
+import com.fastasyncworldedit.core.queue.ChunkWriteSnapshot;
+import com.fastasyncworldedit.core.queue.implementation.blocks.CharSetBlocks;
 import com.fastasyncworldedit.core.queue.IChunk;
 import com.fastasyncworldedit.core.queue.IChunkGet;
 import com.fastasyncworldedit.core.queue.IChunkSet;
@@ -51,6 +53,8 @@ public class PaperweightGetBlocks_Copy implements IChunkGet {
     final ServerLevel serverLevel;
     final LevelChunk levelChunk;
     private Holder<Biome>[][] biomes = null;
+    private Set<UUID> trackedEntities = Set.of();
+    private IChunkSet failedChanges;
 
     protected PaperweightGetBlocks_Copy(LevelChunk levelChunk) {
         this.levelChunk = levelChunk;
@@ -211,6 +215,68 @@ public class PaperweightGetBlocks_Copy implements IChunkGet {
                     biomeData.getClass().getSimpleName()
             );
         }
+    }
+
+    static PaperweightGetBlocks_Copy capture(LevelChunk chunk, IChunkSet set, PaperweightFaweAdapter adapter) {
+        Set<UUID> tracked = new HashSet<>(set.getEntityRemoves());
+        for (FaweCompoundTag tag : set.entities()) tracked.add(NbtUtils.uuid(tag));
+        return capture(chunk, set, adapter, tracked);
+    }
+
+    private static PaperweightGetBlocks_Copy capture(LevelChunk chunk, IChunkSet set, PaperweightFaweAdapter adapter,
+                                                     Set<UUID> tracked) {
+        PaperweightGetBlocks_Copy snapshot = new PaperweightGetBlocks_Copy(chunk);
+        snapshot.trackedEntities = tracked;
+        Set<Integer> tileLayers = new HashSet<>();
+        for (BlockVector3 position : set.tiles().keySet()) tileLayers.add(position.y() >> 4);
+        for (int layer = snapshot.getMinSectionPosition(); layer <= snapshot.getMaxSectionPosition(); layer++) {
+            int index = layer - snapshot.getMinSectionPosition();
+            var section = chunk.getSections()[index];
+            if (set.hasSection(layer) || tileLayers.contains(layer)) {
+                char[] blocks = new char[4096];
+                if (section == null) {
+                    Arrays.fill(blocks, (char) BlockTypesCache.ReservedIDs.AIR);
+                } else {
+                    for (int cell = 0; cell < 4096; cell++) {
+                        blocks[cell] = adapter.adaptToChar(section.getBlockState(cell & 15, cell >> 8, (cell >> 4) & 15));
+                    }
+                }
+                snapshot.storeSection(index, blocks);
+            }
+            if (set.getBiomes() != null && set.hasBiomes(layer)) {
+                snapshot.storeBiomes(index, section == null
+                        ? snapshot.serverLevel.palettedContainerFactory().createForBiomes() : section.getBiomes());
+            }
+        }
+        for (BlockEntity tile : chunk.getBlockEntities().values()) {
+            var position = tile.getBlockPos();
+            int x = position.getX() & 15;
+            int y = position.getY();
+            int z = position.getZ() & 15;
+            char[] requested = set.loadIfPresent(y >> 4);
+            if ((requested != null && requested[(y & 15) << 8 | z << 4 | x] != 0)
+                    || set.tiles().containsKey(BlockVector3.at(x, y, z))) {
+                snapshot.storeTile(tile);
+            }
+        }
+        if (!tracked.isEmpty()) {
+            for (Entity entity : PaperweightPlatformAdapter.getEntities(chunk)) {
+                if (tracked.contains(entity.getUUID())) snapshot.storeEntity(entity);
+            }
+        }
+        return snapshot;
+    }
+
+    void captureFailure(IChunkSet intended, PaperweightFaweAdapter adapter) {
+        PaperweightGetBlocks_Copy after = capture(levelChunk, intended, adapter, trackedEntities);
+        IChunkSet applied = CharSetBlocks.newInstance(chunkX, chunkZ);
+        ChunkWriteSnapshot.captureChanges(this, after, intended, applied);
+        failedChanges = applied;
+    }
+
+    ChunkWriteSnapshot failureSnapshot() {
+        if (failedChanges == null) throw new IllegalStateException("Failed chunk snapshot could not be captured; undo data remains retained");
+        return new ChunkWriteSnapshot(this, failedChanges);
     }
 
     @Override

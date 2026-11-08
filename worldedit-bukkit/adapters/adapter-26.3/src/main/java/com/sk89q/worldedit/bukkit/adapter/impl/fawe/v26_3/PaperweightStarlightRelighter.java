@@ -4,6 +4,8 @@ import com.fastasyncworldedit.bukkit.adapter.StarlightRelighter;
 import com.fastasyncworldedit.core.configuration.Settings;
 import com.fastasyncworldedit.core.math.IntPair;
 import com.fastasyncworldedit.core.queue.IQueueExtent;
+import com.fastasyncworldedit.core.util.TaskManager;
+import com.sk89q.worldedit.bukkit.BukkitAdapter;
 import net.minecraft.server.level.ChunkMap;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.TicketType;
@@ -43,11 +45,8 @@ public class PaperweightStarlightRelighter extends StarlightRelighter<ServerLeve
     @Override
     protected CompletableFuture<?> chunkLoadFuture(final ChunkPos chunkPos) {
         return serverLevel.getWorld().getChunkAtAsync(chunkPos.x(), chunkPos.z())
-                .thenAccept(c -> serverLevel.getChunkSource().addTicketAtLevel(
-                        FAWE_TICKET,
-                        chunkPos,
-                        LIGHT_LEVEL
-                ));
+                .thenCompose(chunk -> runAt(chunkPos, () ->
+                        serverLevel.getChunkSource().addTicketAtLevel(FAWE_TICKET, chunkPos, LIGHT_LEVEL)));
     }
 
     protected void invokeRelight(
@@ -66,16 +65,32 @@ public class PaperweightStarlightRelighter extends StarlightRelighter<ServerLeve
      * Allow the server to unload the chunks again.
      * Also, if chunk packets are sent delayed, we need to do that here
      */
-    protected void postProcessChunks(Set<ChunkPos> coords) {
+    protected CompletableFuture<Void> postProcessChunks(Set<ChunkPos> coords) {
         boolean delay = Settings.settings().LIGHTING.DELAY_PACKET_SENDING;
+        CompletableFuture<?>[] tasks = new CompletableFuture<?>[coords.size()];
+        int index = 0;
         for (ChunkPos pos : coords) {
-            int x = pos.x();
-            int z = pos.z();
-            if (delay) { // we still need to send the block changes of that chunk
-                PaperweightPlatformAdapter.sendChunk(new IntPair(x, z), serverLevel, x, z);
-            }
-            serverLevel.getChunkSource().removeTicketAtLevel(FAWE_TICKET, pos, LIGHT_LEVEL);
+            tasks[index++] = runAt(pos, () -> {
+                if (delay) {
+                    PaperweightPlatformAdapter.sendChunk(new IntPair(pos.x(), pos.z()), serverLevel, pos.x(), pos.z());
+                }
+                serverLevel.getChunkSource().removeTicketAtLevel(FAWE_TICKET, pos, LIGHT_LEVEL);
+            });
         }
+        return CompletableFuture.allOf(tasks);
+    }
+
+    private CompletableFuture<Void> runAt(ChunkPos chunkPos, Runnable runnable) {
+        CompletableFuture<Void> result = new CompletableFuture<>();
+        TaskManager.taskManager().taskAt(() -> {
+            try {
+                runnable.run();
+                result.complete(null);
+            } catch (Throwable throwable) {
+                result.completeExceptionally(throwable);
+            }
+        }, BukkitAdapter.adapt(serverLevel.getWorld()), chunkPos.x(), chunkPos.z());
+        return result;
     }
 
 }

@@ -13,6 +13,7 @@ import com.fastasyncworldedit.core.math.IntPair;
 import com.fastasyncworldedit.core.util.MathMan;
 import com.fastasyncworldedit.core.util.TaskManager;
 import com.mojang.serialization.DataResult;
+import com.sk89q.worldedit.bukkit.BukkitAdapter;
 import com.sk89q.worldedit.bukkit.WorldEditPlugin;
 import com.sk89q.worldedit.bukkit.adapter.BukkitImplAdapter;
 import com.sk89q.worldedit.bukkit.adapter.Refraction;
@@ -27,7 +28,6 @@ import net.minecraft.core.IdMap;
 import net.minecraft.core.Registry;
 import net.minecraft.core.RegistryAccess;
 import net.minecraft.network.protocol.game.ClientboundLevelChunkWithLightPacket;
-import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.dedicated.DedicatedServer;
 import net.minecraft.server.level.ChunkHolder;
 import net.minecraft.server.level.ChunkMap;
@@ -262,8 +262,7 @@ public final class PaperweightPlatformAdapter extends NMSAdapter {
         if (levelChunk != null) {
             return CompletableFuture.completedFuture(levelChunk);
         }
-        if (PaperSupport.isPaper()) {
-            CompletableFuture<LevelChunk> future = serverLevel
+        CompletableFuture<LevelChunk> future = serverLevel
                 .getWorld()
                 .getChunkAtAsync(chunkX, chunkZ, true, true)
                 .thenApply(chunk -> {
@@ -275,22 +274,19 @@ public final class PaperweightPlatformAdapter extends NMSAdapter {
                         return null;
                     }
                 });
-            try {
-                if (!future.isCompletedExceptionally() || (future.isDone() && future.get() != null)) {
-                    return future;
-                }
-                Throwable t = future.exceptionNow();
-                LOGGER.error("Asynchronous chunk load at {},{} exceptionally completed immediately", chunkX, chunkZ, t);
-            } catch (InterruptedException | ExecutionException e) {
-                LOGGER.error(
-                    "Unexpected error when getting completed future at chunk {},{}. Returning to default.",
-                    chunkX,
-                    chunkZ,
-                    e
-                );
+        try {
+            if (!future.isCompletedExceptionally() || (future.isDone() && future.get() != null)) {
+                return future;
             }
+            Throwable throwable = future.exceptionNow();
+            LOGGER.error("Asynchronous chunk load at {},{} exceptionally completed immediately", chunkX, chunkZ, throwable);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return CompletableFuture.failedFuture(e);
+        } catch (ExecutionException e) {
+            return CompletableFuture.failedFuture(e.getCause());
         }
-        return CompletableFuture.supplyAsync(() -> TaskManager.taskManager().sync(() -> serverLevel.getChunk(chunkX, chunkZ)));
+        return future;
     }
 
     private static LevelChunk toLevelChunk(Chunk chunk) {
@@ -298,39 +294,31 @@ public final class PaperweightPlatformAdapter extends NMSAdapter {
     }
 
     public static @Nullable LevelChunk getChunkImmediatelyAsync(ServerLevel serverLevel, int chunkX, int chunkZ) {
-        if (!PaperSupport.isPaper()) {
-            LevelChunk nmsChunk = serverLevel.getChunkSource().getChunk(chunkX, chunkZ, false);
-            if (nmsChunk != null) {
-                return nmsChunk;
-            }
-            if (Fawe.isMainThread()) {
-                return serverLevel.getChunk(chunkX, chunkZ);
-            }
-            return null;
-        } else {
-            LevelChunk nmsChunk = serverLevel.getChunkSource().getChunkAtIfCachedImmediately(chunkX, chunkZ);
-            if (nmsChunk != null) {
-                addTicket(serverLevel, chunkX, chunkZ);
-                return nmsChunk;
-            }
-            nmsChunk = serverLevel.getChunkSource().getChunkAtIfLoadedImmediately(chunkX, chunkZ);
-            if (nmsChunk != null) {
-                addTicket(serverLevel, chunkX, chunkZ);
-                return nmsChunk;
-            }
-            // Avoid "async" methods from the main thread.
-            if (Fawe.isMainThread()) {
-                return serverLevel.getChunk(chunkX, chunkZ);
-            }
-            return null;
+        LevelChunk nmsChunk = serverLevel.getChunkSource().getChunkAtIfCachedImmediately(chunkX, chunkZ);
+        if (nmsChunk != null) {
+            addTicket(serverLevel, chunkX, chunkZ);
+            return nmsChunk;
         }
+        nmsChunk = serverLevel.getChunkSource().getChunkAtIfLoadedImmediately(chunkX, chunkZ);
+        if (nmsChunk != null) {
+            addTicket(serverLevel, chunkX, chunkZ);
+        }
+        // Avoid "async" methods from the main thread.
+        if (Fawe.isMainThread()) {
+            return serverLevel.getChunk(chunkX, chunkZ);
+        }
+        return nmsChunk;
     }
 
     private static void addTicket(ServerLevel serverLevel, int chunkX, int chunkZ) {
-        // Ensure chunk is definitely loaded before applying a ticket
-        io.papermc.paper.util.MCUtil.MAIN_EXECUTOR.execute(() -> serverLevel
-                .getChunkSource()
-                .addTicketWithRadius(ChunkHolderManager.UNLOAD_COOLDOWN, new ChunkPos(chunkX, chunkZ), 0));
+        TaskManager.taskManager().syncAt(() -> {
+            serverLevel.getChunkSource().addTicketWithRadius(
+                    ChunkHolderManager.UNLOAD_COOLDOWN,
+                    new ChunkPos(chunkX, chunkZ),
+                    0
+            );
+            return null;
+        }, BukkitAdapter.adapt(serverLevel.getWorld()), chunkX, chunkZ);
     }
 
     public static ChunkHolder getPlayerChunk(ServerLevel nmsWorld, final int chunkX, final int chunkZ) {
@@ -344,52 +332,40 @@ public final class PaperweightPlatformAdapter extends NMSAdapter {
 
     @SuppressWarnings("deprecation")
     public static void sendChunk(IntPair pair, ServerLevel nmsWorld, int chunkX, int chunkZ) {
-        ChunkHolder chunkHolder = getPlayerChunk(nmsWorld, chunkX, chunkZ);
-        if (chunkHolder == null) {
-            return;
-        }
-        LevelChunk levelChunk;
-        if (PaperSupport.isPaper()) {
+        Runnable send = () -> {
+            ChunkHolder chunkHolder = getPlayerChunk(nmsWorld, chunkX, chunkZ);
+            if (chunkHolder == null) {
+                return;
+            }
             // getChunkAtIfLoadedImmediately is paper only
-            levelChunk = nmsWorld.getChunkSource().getChunkAtIfLoadedImmediately(chunkX, chunkZ);
-        } else {
-            levelChunk = chunkHolder.getTickingChunkFuture().getNow(ChunkHolder.UNLOADED_LEVEL_CHUNK).orElse(null);
-        }
-        if (levelChunk == null) {
-            return;
-        }
-        StampLockHolder lockHolder = new StampLockHolder();
-        NMSAdapter.beginChunkPacketSend(nmsWorld.getWorld().getName(), pair, lockHolder);
-        if (lockHolder.chunkLock == null) {
-            return;
-        }
-        MinecraftServer.getServer().execute(() -> {
+            LevelChunk levelChunk = nmsWorld.getChunkSource().getChunkAtIfLoadedImmediately(chunkX, chunkZ);
+            if (levelChunk == null) {
+                return;
+            }
+            StampLockHolder lockHolder = new StampLockHolder();
+            NMSAdapter.beginChunkPacketSend(nmsWorld.getWorld().getName(), pair, lockHolder);
+            if (lockHolder.chunkLock == null) {
+                return;
+            }
             try {
                 ChunkPos pos = levelChunk.getPos();
-                ClientboundLevelChunkWithLightPacket packet;
-                if (PaperSupport.isPaper()) {
-                    packet = new ClientboundLevelChunkWithLightPacket(
+                // the anti-xray boolean parameter was removed in 26.3
+                ClientboundLevelChunkWithLightPacket packet = new ClientboundLevelChunkWithLightPacket(
                         levelChunk,
                         nmsWorld.getLightEngine(),
                         null,
                         null
-                        // boolean parameter was removed from paper in 26.3
-                        //TODO Check when Paper 26.3 approaches beta.
-                    );
-                } else {
-                    // deprecated on paper - deprecation suppressed
-                    packet = new ClientboundLevelChunkWithLightPacket(
-                        levelChunk,
-                        nmsWorld.getLightEngine(),
-                        null,
-                        null
-                    );
-                }
+                );
                 nearbyPlayers(nmsWorld, pos).forEach(p -> p.connection.send(packet));
             } finally {
                 NMSAdapter.endChunkPacketSend(nmsWorld.getWorld().getName(), pair, lockHolder);
             }
-        });
+        };
+        if (org.bukkit.Bukkit.isOwnedByCurrentRegion(nmsWorld.getWorld(), chunkX, chunkZ)) {
+            send.run();
+            return;
+        }
+        TaskManager.taskManager().taskAt(send, BukkitAdapter.adapt(nmsWorld.getWorld()), chunkX, chunkZ);
     }
 
     private static List<ServerPlayer> nearbyPlayers(ServerLevel serverLevel, ChunkPos coordIntPair) {

@@ -5,6 +5,7 @@ import com.fastasyncworldedit.bukkit.adapter.DelegateSemaphore;
 import com.fastasyncworldedit.bukkit.adapter.NativeEntityFunctionSet;
 import com.fastasyncworldedit.bukkit.util.PaperSupport;
 import com.fastasyncworldedit.core.FaweCache;
+import com.fastasyncworldedit.core.queue.ChunkWriteSnapshot;
 import com.fastasyncworldedit.core.configuration.Settings;
 import com.fastasyncworldedit.core.extent.processor.heightmap.HeightMapType;
 import com.fastasyncworldedit.core.internal.exception.FaweException;
@@ -14,7 +15,7 @@ import com.fastasyncworldedit.core.nbt.FaweCompoundTag;
 import com.fastasyncworldedit.core.queue.IChunkSet;
 import com.fastasyncworldedit.core.util.MathMan;
 import com.fastasyncworldedit.core.util.NbtUtils;
-import com.fastasyncworldedit.core.util.collection.AdaptedMap;
+import com.fastasyncworldedit.core.util.TaskManager;
 import com.sk89q.worldedit.bukkit.BukkitAdapter;
 import com.sk89q.worldedit.bukkit.BukkitEntity;
 import com.sk89q.worldedit.bukkit.WorldEditPlugin;
@@ -57,6 +58,7 @@ import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.lighting.LevelLightEngine;
 import net.minecraft.world.level.storage.ValueInput;
 import org.apache.logging.log4j.Logger;
+import org.bukkit.Bukkit;
 import org.bukkit.World;
 import org.bukkit.craftbukkit.CraftWorld;
 import org.bukkit.craftbukkit.block.CraftBlock;
@@ -87,6 +89,7 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 import static com.sk89q.worldedit.bukkit.adapter.impl.fawe.v26_3.PaperweightPlatformAdapter.createInput;
 import static com.sk89q.worldedit.bukkit.adapter.impl.fawe.v26_3.PaperweightPlatformAdapter.createOutput;
@@ -197,23 +200,28 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
 
     @Override
     public FaweCompoundTag tile(final int x, final int y, final int z) {
-        BlockEntity blockEntity = getChunk().getBlockEntity(new BlockPos((x & 15) + (
-                chunkX << 4), y, (z & 15) + (
-                chunkZ << 4)));
-        if (blockEntity == null) {
-            return null;
-        }
-        return NMS_TO_TILE.apply(blockEntity);
-
+        return callOnOwnerThread(() -> {
+            BlockEntity blockEntity = getChunk().getBlockEntity(new BlockPos(
+                    (x & 15) + (chunkX << 4), y, (z & 15) + (chunkZ << 4)
+            ));
+            return blockEntity == null ? null : FaweCompoundTag.of(NMS_TO_TILE.apply(blockEntity).linTag());
+        });
     }
 
     @Override
     public Map<BlockVector3, FaweCompoundTag> tiles() {
-        Map<BlockPos, BlockEntity> nmsTiles = getChunk().getBlockEntities();
-        if (nmsTiles.isEmpty()) {
-            return Collections.emptyMap();
-        }
-        return AdaptedMap.immutable(nmsTiles, posNms2We, NMS_TO_TILE);
+        return callOnOwnerThread(() -> {
+            Map<BlockPos, BlockEntity> nmsTiles = getChunk().getBlockEntities();
+            if (nmsTiles.isEmpty()) {
+                return Collections.emptyMap();
+            }
+            Map<BlockVector3, FaweCompoundTag> snapshots = new HashMap<>(nmsTiles.size());
+            nmsTiles.forEach((position, blockEntity) -> snapshots.put(
+                    posNms2We.apply(position),
+                    FaweCompoundTag.of(NMS_TO_TILE.apply(blockEntity).linTag())
+            ));
+            return Map.copyOf(snapshots);
+        });
     }
 
     @Override
@@ -270,24 +278,27 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
 
     @Override
     public int[] getHeightMap(HeightMapType type) {
-        long[] longArray = getChunk().heightmaps.get(Heightmap.Types.valueOf(type.name())).getRawData();
-        BitArrayUnstretched bitArray = new BitArrayUnstretched(9, 256, longArray);
-        return bitArray.toRaw(new int[256]);
+        return callOnOwnerThread(() -> {
+            long[] longArray = getChunk().heightmaps.get(Heightmap.Types.valueOf(type.name())).getRawData();
+            BitArrayUnstretched bitArray = new BitArrayUnstretched(9, 256, longArray);
+            return bitArray.toRaw(new int[256]);
+        });
     }
 
     @Override
     public @Nullable FaweCompoundTag entity(final UUID uuid) {
-        List<Entity> entities = PaperweightPlatformAdapter.getEntities(getChunk());
-        Entity entity = null;
-        for (Entity e : entities) {
-            if (e.getUUID().equals(uuid)) {
-                entity = e;
-                break;
+        FaweCompoundTag loadedEntity = callOnOwnerThread(() -> {
+            for (Entity entity : PaperweightPlatformAdapter.getEntities(getChunk())) {
+                if (entity.getUUID().equals(uuid)) {
+                    LinValueOutput output = createOutput();
+                    entity.save(output);
+                    return FaweCompoundTag.of(output::buildResult);
+                }
             }
-        }
-        if (entity != null) {
-            org.bukkit.entity.Entity bukkitEnt = entity.getBukkitEntity();
-            return FaweCompoundTag.of(BukkitAdapter.adapt(bukkitEnt).getState().getNbt());
+            return null;
+        });
+        if (loadedEntity != null) {
+            return loadedEntity;
         }
         for (FaweCompoundTag tag : entities()) {
             if (uuid.equals(NbtUtils.uuid(tag))) {
@@ -299,24 +310,34 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
 
     @Override
     public Collection<FaweCompoundTag> entities() {
-        List<Entity> entities = PaperweightPlatformAdapter.getEntities(getChunk());
-        if (entities.isEmpty()) {
-            return Collections.emptyList();
-        }
-        return new NativeEntityFunctionSet<>(entities, Entity::getUUID, e -> {
-            LinValueOutput output = createOutput();
-            e.save(output);
-            return FaweCompoundTag.of(output::buildResult);
+        return callOnOwnerThread(() -> {
+            List<Entity> entities = PaperweightPlatformAdapter.getEntities(getChunk());
+            if (entities.isEmpty()) {
+                return Collections.emptyList();
+            }
+            List<FaweCompoundTag> snapshots = new ArrayList<>(entities.size());
+            for (Entity entity : entities) {
+                LinValueOutput output = createOutput();
+                entity.save(output);
+                snapshots.add(FaweCompoundTag.of(output::buildResult));
+            }
+            return snapshots;
         });
     }
 
     @Override
     public Set<com.sk89q.worldedit.entity.Entity> getFullEntities() {
-        List<Entity> entities = PaperweightPlatformAdapter.getEntities(getChunk());
-        if (entities.isEmpty()) {
-            return Collections.emptySet();
-        }
-        return new NativeEntityFunctionSet<>(entities, Entity::getUUID, e -> new BukkitEntity(e.getBukkitEntity()));
+        return callOnOwnerThread(() -> {
+            List<Entity> entities = PaperweightPlatformAdapter.getEntities(getChunk());
+            if (entities.isEmpty()) {
+                return Collections.emptySet();
+            }
+            Set<com.sk89q.worldedit.entity.Entity> snapshots = new HashSet<>(entities.size());
+            for (Entity entity : entities) {
+                snapshots.add(new BukkitEntity(entity.getBukkitEntity()));
+            }
+            return snapshots;
+        });
     }
 
     private void removeEntity(Entity entity) {
@@ -329,6 +350,21 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
     }
 
     @Override
+    protected <T> T callOnOwnerThread(Supplier<T> function) {
+        return TaskManager.taskManager().syncAt(
+                function,
+                BukkitAdapter.adapt(serverLevel.getWorld()),
+                chunkX,
+                chunkZ
+        );
+    }
+
+    @Override
+    protected boolean isOwnerThread() {
+        return Bukkit.isOwnedByCurrentRegion(serverLevel.getWorld(), chunkX, chunkZ);
+    }
+
+    @Override
     protected <T extends Future<T>> T internalCall(
             IChunkSet set,
             Runnable finalizer,
@@ -336,13 +372,38 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
             LevelChunk nmsChunk,
             ServerLevel nmsWorld
     ) throws Exception {
-        PaperweightGetBlocks_Copy copy = createCopy ? new PaperweightGetBlocks_Copy(nmsChunk) : null;
-        if (createCopy) {
+        PaperweightGetBlocks_Copy copy = createCopy ? PaperweightGetBlocks_Copy.capture(nmsChunk, set, adapter) : null;
+        if (copy != null) {
             if (copies.containsKey(copyKey)) {
                 throw new IllegalStateException("Copy key already used.");
             }
             copies.put(copyKey, copy);
         }
+        try {
+            return performCall(set, finalizer, nmsChunk, nmsWorld);
+        } catch (Exception | Error failure) {
+            if (copy != null) {
+                try {
+                    copy.captureFailure(set, adapter);
+                } catch (Exception | Error snapshotFailure) {
+                    if (snapshotFailure != failure) failure.addSuppressed(snapshotFailure);
+                }
+            }
+            throw failure;
+        }
+    }
+
+    @Override
+    public ChunkWriteSnapshot getFailureSnapshot(int key) {
+        PaperweightGetBlocks_Copy copy = (PaperweightGetBlocks_Copy) copies.get(key);
+        if (copy == null) return null;
+        ChunkWriteSnapshot snapshot = copy.failureSnapshot();
+        copies.remove(key, copy);
+        return snapshot;
+    }
+
+    private <T extends Future<T>> T performCall(IChunkSet set, Runnable finalizer, LevelChunk nmsChunk,
+                                               ServerLevel nmsWorld) throws Exception {
         // Remove existing tiles. Create a copy so that we can remove blocks
         Map<BlockPos, BlockEntity> chunkTiles = new HashMap<>(nmsChunk.getBlockEntities());
         List<BlockEntity> beacons = null;
@@ -369,9 +430,6 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
                         continue;
                     }
                     nmsChunk.removeBlockEntity(tile.getBlockPos());
-                    if (createCopy) {
-                        copy.storeTile(tile);
-                    }
                 }
             }
         }
@@ -397,10 +455,6 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
                     if (biomes[setSectionIndex] != null) {
                         synchronized (super.sectionLocks[getSectionIndex]) {
                             LevelChunkSection existingSection = levelChunkSections[getSectionIndex];
-                            if (createCopy && existingSection != null) {
-                                copy.storeBiomes(getSectionIndex, existingSection.getBiomes());
-                            }
-
                             if (existingSection == null) {
                                 PalettedContainer<Holder<Biome>> biomeData = PaperweightPlatformAdapter.getBiomePalettedContainer(
                                         biomes[setSectionIndex],
@@ -465,16 +519,6 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
                     // Don't attempt to tick section whilst we're editing
                     if (existingSection != null) {
                         PaperweightPlatformAdapter.clearCounts(existingSection);
-                    }
-
-                    if (createCopy) {
-                        char[] tmpLoad = load(layerNo);
-                        char[] copyArr = new char[4096];
-                        System.arraycopy(tmpLoad, 0, copyArr, 0, 4096);
-                        copy.storeSection(getSectionIndex, copyArr);
-                        if (biomes != null && existingSection != null) {
-                            copy.storeBiomes(getSectionIndex, existingSection.getBiomes());
-                        }
                     }
 
                     if (existingSection == null) {
@@ -616,9 +660,6 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
                     for (Entity entity : entities) {
                         UUID uuid = entity.getUUID();
                         if (entityRemoves.contains(uuid)) {
-                            if (createCopy) {
-                                copy.storeEntity(entity);
-                            }
                             removeEntity(entity);
                             entitiesRemoved.add(uuid);
                             entityRemoves.remove(uuid);
@@ -747,21 +788,19 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
             if (bitMask == 0 && biomes == null && !lightUpdate) {
                 callback = null;
             } else {
-                int finalMask = bitMask != 0 ? bitMask : lightUpdate ? set.getBitMask() : 0;
                 syncTasks.add(() -> {
                     // Set Modified
                     nmsChunk.setLightCorrect(true);
                     nmsChunk.mustNotSave = false;
                 });
                 callback = () -> {
-                    // send to player
-                    if (!set
-                            .getSideEffectSet()
-                            .shouldApply(SideEffect.LIGHTING) || !Settings.settings().LIGHTING.DELAY_PACKET_SENDING || finalMask == 0 && biomes != null) {
+                    // Admission can pause later chunks; publish completed terrain before the final lighting pass.
+                    try {
                         this.send();
-                    }
-                    if (finalizer != null) {
-                        finalizer.run();
+                    } finally {
+                        if (finalizer != null) {
+                            finalizer.run();
+                        }
                     }
                 };
             }
@@ -1014,6 +1053,9 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
     @SuppressWarnings("unchecked")
     public boolean trim(boolean aggressive) {
         synchronized (this) {
+            if (levelChunk != null && serverLevel.getChunkSource().getChunkAtIfLoadedImmediately(chunkX, chunkZ) != levelChunk) {
+                aggressive = true;
+            }
             if (sections == null && (!aggressive || levelChunk == null)) {
                 skyLight = new DataLayer[getSectionCount()];
                 blockLight = new DataLayer[getSectionCount()];
